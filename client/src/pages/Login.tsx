@@ -17,10 +17,10 @@ const Login = () => {
 
     // Get Google auth URL
     auth.getGoogleAuthUrl()
-      .then(response => {
+      .then((response: any) => {
         setAuthUrl(response.data.url);
       })
-      .catch(error => {
+      .catch((error: unknown) => {
         console.error('Failed to get auth URL:', error);
       });
   }, [navigate]);

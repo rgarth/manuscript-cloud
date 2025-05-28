@@ -2,6 +2,8 @@ import { google } from 'googleapis';
 
 class GoogleService {
   private oauth2Client: any;
+  private drive: any;
+  private docs: any;
 
   constructor(accessToken: string, refreshToken: string) {
     this.oauth2Client = new google.auth.OAuth2(
@@ -14,6 +16,9 @@ class GoogleService {
       access_token: accessToken,
       refresh_token: refreshToken,
     });
+
+    this.drive = google.drive({ version: 'v3', auth: this.oauth2Client });
+    this.docs = google.docs({ version: 'v1', auth: this.oauth2Client });
   }
 
   // Create a Google Drive folder
@@ -81,6 +86,13 @@ class GoogleService {
       },
     });
   }
+
+  async deleteFile(fileId: string): Promise<void> {
+    await this.drive.files.delete({
+      fileId: fileId
+    });
+  }
 }
 
 export default GoogleService;
+

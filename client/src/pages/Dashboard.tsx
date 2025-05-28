@@ -2,8 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { projects } from '../services/api';
 
+// Define interfaces for your data types
+interface Project {
+  _id: string;
+  name: string;
+  description?: string;
+  createdAt: string;
+  updatedAt: string;
+  rootFolderId: string;
+  owner: string;
+}
+
 const Dashboard = () => {
-  const [userProjects, setUserProjects] = useState([]);
+  const [userProjects, setUserProjects] = useState<Project[]>([]);
   const [newProjectName, setNewProjectName] = useState('');
   const [isLoading, setIsLoading] = useState(true);
 
@@ -24,7 +35,7 @@ const Dashboard = () => {
       });
   };
 
-  const handleCreateProject = (e) => {
+  const handleCreateProject = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!newProjectName.trim()) return;
 
