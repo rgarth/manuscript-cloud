@@ -1,4 +1,4 @@
-// Update client/src/pages/Project.tsx
+// client/src/pages/Project.tsx
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -121,24 +121,30 @@ const Project = () => {
       await documents.delete(deleteModal.document._id, force);
       
       // Remove the document and its descendants from local state
-      const deleteDocumentAndDescendants = (docId: string): Document[] => {
-        const remainingDocs = projectDocs.filter(doc => {
-          if (doc._id === docId) return false;
-          
-          // Check if this document is a descendant of the deleted document
-          let currentDoc = doc;
-          while (currentDoc.parent) {
-            if (currentDoc.parent === docId) return false;
-            currentDoc = projectDocs.find(d => d._id === currentDoc.parent) || currentDoc;
-            if (currentDoc === doc) break; // Prevent infinite loop
-          }
-          
-          return true;
+      const deleteDocumentAndDescendants = (docId: string): void => {
+        setProjectDocs(prevDocs => {
+          const remainingDocs = prevDocs.filter(doc => {
+            if (doc._id === docId) return false;
+            
+            // Check if this document is a descendant of the deleted document
+            let currentParentId = doc.parent;
+            const visited = new Set<string>();
+            
+            while (currentParentId && !visited.has(currentParentId)) {
+              visited.add(currentParentId);
+              if (currentParentId === docId) return false;
+              
+              const parentDoc = prevDocs.find(d => d._id === currentParentId);
+              currentParentId = parentDoc?.parent || null;
+            }
+            
+            return true;
+          });
+          return remainingDocs;
         });
-        return remainingDocs;
       };
       
-      setProjectDocs(deleteDocumentAndDescendants(deleteModal.document._id));
+      deleteDocumentAndDescendants(deleteModal.document._id);
       
       // Close modal
       setDeleteModal({

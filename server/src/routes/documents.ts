@@ -66,7 +66,7 @@ router.post('/', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      const googleService = new GoogleService(user.accessToken, user.refreshToken);
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
 
       // Find parent folder ID in Google Drive
       let parentFolderId = project.rootFolderId;
@@ -164,7 +164,7 @@ router.get('/:id/content', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      const googleService = new GoogleService(user.accessToken, user.refreshToken);
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
 
       try {
         const content = await googleService.getDocumentContent(document.googleDocId);
@@ -333,7 +333,7 @@ router.delete('/:id', function(req: Request, res: Response) {
           
           for (const child of children) {
             if (child.documentType === 'folder') {
-              const childDescendants = await getAllDescendants(child._id);
+              const childDescendants = await getAllDescendants(child._id.toString());
               descendants = descendants.concat(childDescendants);
             }
           }
@@ -348,7 +348,7 @@ router.delete('/:id', function(req: Request, res: Response) {
       // Delete from Google Drive if needed
       if (user.accessToken && user.refreshToken) {
         try {
-          const googleService = new GoogleService(user.accessToken, user.refreshToken);
+          const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
           
           for (const doc of documentsToDelete) {
             if (doc.googleDriveId) {

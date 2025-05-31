@@ -29,6 +29,7 @@ export const projects = {
   create: (data: { name: string, description?: string }) => api.post('/projects', data),
   getById: (id: string) => api.get(`/projects/${id}`),
   sync: (id: string, fullSync: boolean = false) => api.post(`/projects/${id}/sync`, { fullSync }),
+  delete: (id: string) => api.delete(`/projects/${id}`),
 };
 
 export const documents = {
@@ -50,7 +51,8 @@ export const documents = {
     newParentId?: string,
     newOrder?: number,
   }) => api.patch(`/documents/${id}/move`, data),
-  delete: (id: string) => api.delete(`/documents/${id}`),
+  canDelete: (id: string) => api.get(`/documents/${id}/can-delete`),
+  delete: (id: string, force: boolean = false) => api.delete(`/documents/${id}${force ? '?force=true' : ''}`),
 };
 
 export default api;

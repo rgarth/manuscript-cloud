@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 interface IDocument extends mongoose.Document {
   project: mongoose.Types.ObjectId;
   title: string;
-  documentType: 'book' | 'part' | 'chapter' | 'scene' | 'character' | 'place' | 'note' | 'research';
+  documentType: 'folder' | 'part' | 'chapter' | 'scene' | 'character' | 'setting' | 'note' | 'research';
   parent: mongoose.Types.ObjectId | null;
   googleDocId?: string;
   googleDriveId?: string;
@@ -33,14 +33,14 @@ const DocumentSchema = new mongoose.Schema({
     type: String,
     enum: [
       // Folders (organizational only)
-      'book',        // Top level container
+      'folder',      // Generic folder
       'part',        // Optional book parts/sections
       'chapter',     // Chapter folders (contain scenes)
       
       // Documents (actual Google Docs)
       'scene',       // Individual scene docs (can be moved between chapters)
       'character',   // Character notes (no compile)
-      'place',       // Location/setting notes (no compile)
+      'setting',     // Location/setting notes (no compile)
       'note',        // General notes (no compile)
       'research'     // Research materials (no compile)
     ],
