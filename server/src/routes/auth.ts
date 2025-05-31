@@ -9,15 +9,16 @@ const router = express.Router();
 type Request = ExpressRequest;
 type Response = ExpressResponse;
 
-// Google OAuth2 setup
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI
-);
-
 // Generate Google OAuth URL
 router.get('/google/url', function(req: Request, res: Response) {
+
+  // Create OAuth2 client inside the handler to ensure env vars are loaded
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+  );
+
   const scopes = [
     'https://www.googleapis.com/auth/userinfo.profile',
     'https://www.googleapis.com/auth/userinfo.email',
@@ -27,9 +28,9 @@ router.get('/google/url', function(req: Request, res: Response) {
 
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
-    prompt: 'consent', // Forces refresh token on every auth
+    prompt: 'consent',
     scope: scopes,
-    state: 'security_token', // Add CSRF protection
+    state: 'security_token',
   });
 
   res.json({ url });
@@ -46,10 +47,16 @@ router.get('/google/callback', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Invalid authorization code' });
       }
       
-      // Verify state parameter for CSRF protection
       if (state !== 'security_token') {
         return res.status(400).json({ error: 'Invalid state parameter' });
       }
+      
+      // Create OAuth2 client for callback
+      const oauth2Client = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        process.env.GOOGLE_REDIRECT_URI
+      );
       
       // Exchange code for tokens
       const { tokens } = await oauth2Client.getToken(code);
@@ -148,9 +155,6 @@ router.get('/test', function(req: Request, res: Response) {
       try {
         const drive = google.drive({ version: 'v3', auth: oauth2Client });
         const aboutResponse = await drive.about.get({ fields: 'user' });
-        
-        const docs = google.docs({ version: 'v1', auth: oauth2Client });
-        // Just test that we can access the docs API (this will fail if no doc ID, but that's ok)
         
         res.json({
           message: 'Authentication successful',
