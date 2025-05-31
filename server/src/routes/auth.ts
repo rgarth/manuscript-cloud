@@ -19,10 +19,16 @@ router.get('/google/url', function(req: Request, res: Response) {
     process.env.GOOGLE_REDIRECT_URI
   );
 
+  // Define scopes for the OAuth2 client
   const scopes = [
-    'https://www.googleapis.com/auth/userinfo.profile',
+    // User identification (required for login)
     'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/userinfo.profile',
+    
+    // Google Drive - only create/manage files the app creates
+    'https://www.googleapis.com/auth/drive.file',
+    
+    // Google Docs - only for documents the app creates
     'https://www.googleapis.com/auth/documents'
   ];
 
@@ -33,6 +39,7 @@ router.get('/google/url', function(req: Request, res: Response) {
     state: 'security_token',
   });
 
+  console.log('Generated URL:', url); // Debug: see the full URL
   res.json({ url });
 });
 
