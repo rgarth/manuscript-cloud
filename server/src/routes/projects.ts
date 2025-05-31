@@ -1,9 +1,11 @@
+// server/src/routes/projects.ts
 import express from 'express';
 import type { Request, Response } from 'express';
 import Project from '../models/Project.js';
 import Document from '../models/Document.js';
 import User from '../models/User.js';
 import GoogleService from '../services/GoogleService.js';
+import { syncProject } from '../services/SyncService.js';
 
 const router = express.Router();
 
@@ -27,7 +29,7 @@ router.post('/', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
       const { name, description } = req.body;
-      const userId = req.headers['user-id']; // In production use proper auth middleware
+      const userId = req.headers['user-id'] as string; // In production use proper auth middleware
       
       const user = await User.findById(userId);
       if (!user) {
@@ -38,16 +40,21 @@ router.post('/', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
       
-      // Create root folder in Google Drive
-      const googleService = new GoogleService(user.accessToken, user.refreshToken);
-      const rootFolderId = await googleService.createFolder(name);
+      // Create organized folder structure in Google Drive
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
+      const folderStructure = await googleService.createProjectFolder(name);
       
-      // Create project in database
+      // Create project in database with all folder IDs
       const project = await Project.create({
         name,
         description,
         owner: userId,
-        rootFolderId,
+        rootFolderId: folderStructure.rootId,
+        chaptersFolderId: folderStructure.chaptersId,
+        charactersFolderId: folderStructure.charactersId,
+        researchFolderId: folderStructure.researchId,
+        syncStatus: 'synced',
+        lastSyncTime: new Date(),
       });
       
       res.status(201).json(project);
@@ -82,6 +89,63 @@ router.get('/:id', function(req: Request, res: Response) {
     } catch (error) {
       console.error('Error fetching project:', error);
       res.status(500).json({ error: 'Failed to fetch project' });
+    }
+  };
+  
+  handleRequest();
+});
+
+// Sync project with Google Drive
+router.post('/:id/sync', function(req: Request, res: Response) {
+  const handleRequest = async () => {
+    try {
+      const { id } = req.params;
+      const userId = req.headers['user-id'] as string;
+      const { fullSync = false } = req.body;
+
+      // Verify project ownership
+      const project = await Project.findById(id);
+      if (!project) {
+        return res.status(404).json({ error: 'Project not found' });
+      }
+      
+      if (project.owner.toString() !== userId) {
+        return res.status(403).json({ error: 'Not authorized to sync this project' });
+      }
+
+      // Update sync status
+      project.syncStatus = 'syncing';
+      await project.save();
+
+      try {
+        // Perform the sync
+        await syncProject(id, userId, fullSync);
+        
+        // Update sync status to success
+        project.syncStatus = 'synced';
+        project.lastSyncTime = new Date();
+        await project.save();
+
+        res.json({ 
+          success: true, 
+          message: 'Project synced successfully',
+          lastSyncTime: project.lastSyncTime 
+        });
+      } catch (syncError) {
+        // Update sync status to error
+        project.syncStatus = 'error';
+        project.syncError = syncError instanceof Error ? syncError.message : 'Unknown sync error';
+        await project.save();
+
+        console.error('Sync error:', syncError);
+        res.status(500).json({ 
+          error: 'Sync failed', 
+          details: syncError instanceof Error ? syncError.message : 'Unknown error' 
+        });
+      }
+    } catch (error) {
+      console.error('Sync endpoint error:', error);
+      res.status(500).json({ error: 'Failed to initiate sync' });
     }
   };
   

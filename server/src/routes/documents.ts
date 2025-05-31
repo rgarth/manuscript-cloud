@@ -1,3 +1,4 @@
+// server/src/routes/documents.ts
 import express from 'express';
 import type { Request, Response } from 'express';
 import Document from '../models/Document.js';
@@ -66,29 +67,30 @@ router.post('/', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      const googleService = new GoogleService(user.accessToken, user.refreshToken);
+      // Fix: Pass userId as third argument
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
 
       // Find parent folder ID in Google Drive
-      let parentFolderId = project.rootFolderId;
+      let parentFolderId: string | undefined = project.rootFolderId || undefined;
       if (parentId) {
         const parentDoc = await Document.findById(parentId);
-        if (parentDoc) {
-          parentFolderId = parentDoc.googleDriveId || project.rootFolderId;
+        if (parentDoc && parentDoc.googleDriveId) {
+          parentFolderId = parentDoc.googleDriveId;
         }
       }
-      
-      // Convert null to undefined to match createFolder parameter type
-      const safeParentFolderId = parentFolderId ?? undefined;
 
       // Initialize document IDs
       let googleDriveId = '';
       let googleDocId = '';
 
       try {
-        if (documentType === 'folder') {
-          googleDriveId = await googleService.createFolder(title, safeParentFolderId);
+        // Folders: book, part, chapter
+        if (['book', 'part', 'chapter'].includes(documentType)) {
+          googleDriveId = await googleService.createFolder(title, parentFolderId);
+          // Folders don't have Google Doc IDs
         } else {
-          const docInfo = await googleService.createDocument(title, safeParentFolderId);
+          // Documents: scene, character, place, note, research
+          const docInfo = await googleService.createDocument(title, parentFolderId);
           googleDriveId = docInfo.driveId;
           googleDocId = docInfo.docId;
         }
@@ -164,7 +166,8 @@ router.get('/:id/content', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      const googleService = new GoogleService(user.accessToken, user.refreshToken);
+      // Fix: Pass userId as third argument
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
 
       try {
         const content = await googleService.getDocumentContent(document.googleDocId);
@@ -226,6 +229,68 @@ router.patch('/:id', function(req: Request, res: Response) {
   handleRequest();
 });
 
+// Move document to new parent/position
+router.patch('/:id/move', function(req: Request, res: Response) {
+  const handleRequest = async () => {
+    try {
+      const { id } = req.params;
+      const userId = req.headers['user-id'] as string;
+      const { newParentId, newOrder } = req.body;
+
+      const document = await Document.findById(id);
+      if (!document) {
+        return res.status(404).json({ error: 'Document not found' });
+      }
+
+      // Check project access
+      const project = await Project.findById(document.project);
+      if (!project) {
+        return res.status(404).json({ error: 'Associated project not found' });
+      }
+      
+      if (project.owner.toString() !== userId) {
+        return res.status(403).json({ error: 'Not authorized to modify this document' });
+      }
+
+      // Validate the move
+      if (newParentId) {
+        const newParent = await Document.findById(newParentId);
+        if (!newParent) {
+          return res.status(404).json({ error: 'New parent not found' });
+        }
+        
+        // Ensure we're not creating circular references
+        if (newParentId === id) {
+          return res.status(400).json({ error: 'Cannot move document to itself' });
+        }
+        
+        // Only folders can contain other documents
+        if (!['book', 'part', 'chapter'].includes(newParent.documentType)) {
+          return res.status(400).json({ error: 'Can only move documents into folders' });
+        }
+      }
+
+      // Update the document
+      document.parent = newParentId || null;
+      if (newOrder !== undefined) {
+        document.order = newOrder;
+      }
+
+      await document.save();
+      
+      // TODO: Move the actual Google Drive file if needed
+      // This would require updating the Google Drive parent folder
+      
+      return res.json(document);
+    } catch (error) {
+      console.error('Move document error:', error);
+      return res.status(500).json({ error: 'Failed to move document' });
+    }
+  };
+  
+  handleRequest();
+});
+
 // Delete document
 router.delete('/:id', function(req: Request, res: Response) {
   const handleRequest = async () => {
@@ -253,7 +318,8 @@ router.delete('/:id', function(req: Request, res: Response) {
         const user = await User.findById(userId);
         if (user && user.accessToken && user.refreshToken) {
           try {
-            const googleService = new GoogleService(user.accessToken, user.refreshToken);
+            // Fix: Pass userId as third argument
+            const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
             await googleService.deleteFile(document.googleDriveId);
           } catch (googleError) {
             console.error('Failed to delete from Google Drive:', googleError);

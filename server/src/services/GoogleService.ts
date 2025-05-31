@@ -1,4 +1,4 @@
-// server/src/services/GoogleService.ts
+// server/src/services/GoogleService.ts - REPLACE YOUR EXISTING FILE
 import { google } from 'googleapis';
 import User from '../models/User.js';
 
@@ -7,6 +7,7 @@ class GoogleService {
   private drive: any;
   private docs: any;
   private userId: string;
+  private APP_FOLDER_NAME = 'Manuscript Cloud';
 
   constructor(accessToken: string, refreshToken: string, userId: string) {
     this.userId = userId;
@@ -46,13 +47,110 @@ class GoogleService {
     this.docs = google.docs({ version: 'v1', auth: this.oauth2Client });
   }
 
-  // Create a Google Drive folder
+  // Create the main app folder if it doesn't exist
+  async ensureAppFolder(): Promise<string> {
+    try {
+      // Check if app folder already exists
+      const response = await this.drive.files.list({
+        q: `name='${this.APP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+        fields: 'files(id, name)',
+      });
+
+      if (response.data.files.length > 0) {
+        return response.data.files[0].id;
+      }
+
+      // Create the app folder
+      const folderResponse = await this.drive.files.create({
+        requestBody: {
+          name: this.APP_FOLDER_NAME,
+          mimeType: 'application/vnd.google-apps.folder',
+          description: 'Manuscript Cloud - Writing Project Management',
+        },
+        fields: 'id',
+      });
+
+      console.log(`📁 Created app folder: ${this.APP_FOLDER_NAME}`);
+      return folderResponse.data.id;
+    } catch (error) {
+      console.error('❌ Failed to ensure app folder:', error);
+      throw error;
+    }
+  }
+
+  // Create project folder with proper structure
+  async createProjectFolder(projectName: string): Promise<{
+    rootId: string;
+    chaptersId: string;
+    charactersId: string;
+    researchId: string;
+  }> {
+    try {
+      const appFolderId = await this.ensureAppFolder();
+
+      // Create project root folder
+      const projectFolder = await this.drive.files.create({
+        requestBody: {
+          name: projectName,
+          mimeType: 'application/vnd.google-apps.folder',
+          parents: [appFolderId],
+          description: `Manuscript Cloud Project: ${projectName}`,
+          properties: {
+            'manuscript-cloud': 'true',
+            'project-type': 'root',
+            'created-by': this.userId,
+          },
+        },
+        fields: 'id',
+      });
+
+      const projectId = projectFolder.data.id;
+
+      // Create organized subfolders
+      const [chaptersFolder, charactersFolder, researchFolder] = await Promise.all([
+        this.createSubfolder('Chapters', projectId, 'chapters'),
+        this.createSubfolder('Characters', projectId, 'characters'),
+        this.createSubfolder('Research & Notes', projectId, 'research'),
+      ]);
+
+      return {
+        rootId: projectId,
+        chaptersId: chaptersFolder,
+        charactersId: charactersFolder,
+        researchId: researchFolder,
+      };
+    } catch (error) {
+      console.error('❌ Failed to create project structure:', error);
+      throw error;
+    }
+  }
+
+  private async createSubfolder(name: string, parentId: string, type: string): Promise<string> {
+    const response = await this.drive.files.create({
+      requestBody: {
+        name,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentId],
+        properties: {
+          'manuscript-cloud': 'true',
+          'folder-type': type,
+        },
+      },
+      fields: 'id',
+    });
+    return response.data.id;
+  }
+
+  // LEGACY METHOD - kept for backward compatibility
   async createFolder(name: string, parentId?: string): Promise<string> {
     try {
       const fileMetadata = {
         name,
         mimeType: 'application/vnd.google-apps.folder',
         parents: parentId ? [parentId] : undefined,
+        properties: {
+          'manuscript-cloud': 'true',
+        },
       };
       
       const response = await this.drive.files.create({
@@ -68,25 +166,41 @@ class GoogleService {
     }
   }
 
-  // Create a Google Doc
-  async createDocument(name: string, parentId?: string): Promise<{ driveId: string, docId: string }> {
+  // Create document with proper metadata
+  async createDocument(
+    title: string, 
+    parentId?: string, 
+    documentType: string = 'scene',
+    projectId?: string,
+    order: number = 0
+  ): Promise<{ driveId: string; docId: string }> {
     try {
-      const fileMetadata = {
-        name,
-        mimeType: 'application/vnd.google-apps.document',
-        parents: parentId ? [parentId] : undefined,
+      const properties: any = {
+        'manuscript-cloud': 'true',
+        'document-type': documentType,
+        'order': order.toString(),
+        'created-by': this.userId,
       };
-      
+
+      if (projectId) {
+        properties['project-id'] = projectId;
+      }
+
       const response = await this.drive.files.create({
-        requestBody: fileMetadata,
+        requestBody: {
+          name: title,
+          mimeType: 'application/vnd.google-apps.document',
+          parents: parentId ? [parentId] : undefined,
+          description: `Manuscript Cloud ${documentType}: ${title}`,
+          properties,
+        },
         fields: 'id',
       });
-      
-      console.log(`📄 Created document "${name}" with ID: ${response.data.id}`);
-      
+
+      console.log(`📄 Created document "${title}" with ID: ${response.data.id}`);
       return { 
-        driveId: response.data.id as string,
-        docId: response.data.id as string
+        driveId: response.data.id,
+        docId: response.data.id
       };
     } catch (error) {
       console.error('❌ Failed to create document:', error);
@@ -109,48 +223,36 @@ class GoogleService {
     }
   }
 
-  // Update document content
-  async updateDocumentContent(docId: string, content: string): Promise<void> {
+  // Sync: Get all project files from Google Drive
+  async syncProjectFiles(projectFolderId: string): Promise<any[]> {
     try {
-      // First, clear the document
-      const doc = await this.docs.documents.get({ documentId: docId });
-      const docLength = doc.data.body?.content?.reduce((length: number, element: any) => {
-        if (element.paragraph) {
-          return length + (element.paragraph.elements?.reduce((pLength: number, pElement: any) => {
-            return pLength + (pElement.textRun?.content?.length || 0);
-          }, 0) || 0);
-        }
-        return length;
-      }, 0) || 1;
-
-      await this.docs.documents.batchUpdate({
-        documentId: docId,
-        requestBody: {
-          requests: [
-            {
-              deleteContentRange: {
-                range: {
-                  startIndex: 1,
-                  endIndex: docLength,
-                },
-              },
-            },
-            {
-              insertText: {
-                location: {
-                  index: 1,
-                },
-                text: content,
-              },
-            },
-          ],
-        },
-      });
+      // Get all files in project folder and subfolders recursively
+      const allFiles: any[] = [];
+      await this.getAllFilesRecursive(projectFolderId, allFiles);
       
-      console.log(`✏️ Updated content for document: ${docId}`);
+      // Filter only our app files
+      return allFiles.filter(file => 
+        file.properties && file.properties['manuscript-cloud'] === 'true'
+      );
     } catch (error) {
-      console.error('❌ Failed to update document content:', error);
-      throw new Error(`Failed to update document content: ${error}`);
+      console.error('❌ Failed to sync project files:', error);
+      throw error;
+    }
+  }
+
+  private async getAllFilesRecursive(folderId: string, allFiles: any[]): Promise<void> {
+    const response = await this.drive.files.list({
+      q: `'${folderId}' in parents and trashed=false`,
+      fields: 'files(id, name, mimeType, parents, properties, description, createdTime, modifiedTime)',
+    });
+
+    for (const file of response.data.files || []) {
+      allFiles.push(file);
+      
+      // If it's a folder, get its contents too
+      if (file.mimeType === 'application/vnd.google-apps.folder') {
+        await this.getAllFilesRecursive(file.id, allFiles);
+      }
     }
   }
 
@@ -165,24 +267,6 @@ class GoogleService {
     } catch (error) {
       console.error('❌ Failed to delete file:', error);
       throw new Error(`Failed to delete file: ${error}`);
-    }
-  }
-
-  // List files in a folder
-  async listFiles(folderId?: string): Promise<any[]> {
-    try {
-      const query = folderId ? `'${folderId}' in parents and trashed=false` : 'trashed=false';
-      
-      const response = await this.drive.files.list({
-        q: query,
-        fields: 'files(id, name, mimeType, createdTime, modifiedTime)',
-        orderBy: 'name',
-      });
-      
-      return response.data.files || [];
-    } catch (error) {
-      console.error('❌ Failed to list files:', error);
-      throw new Error(`Failed to list files: ${error}`);
     }
   }
 

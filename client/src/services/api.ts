@@ -1,3 +1,4 @@
+// client/src/services/api.ts
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
@@ -27,6 +28,7 @@ export const projects = {
   getAll: () => api.get('/projects'),
   create: (data: { name: string, description?: string }) => api.post('/projects', data),
   getById: (id: string) => api.get(`/projects/${id}`),
+  sync: (id: string, fullSync: boolean = false) => api.post(`/projects/${id}/sync`, { fullSync }),
 };
 
 export const documents = {
@@ -39,6 +41,16 @@ export const documents = {
     synopsis?: string,
   }) => api.post('/documents', data),
   getContent: (id: string) => api.get(`/documents/${id}/content`),
+  update: (id: string, data: {
+    title?: string,
+    synopsis?: string,
+    metadata?: any,
+  }) => api.patch(`/documents/${id}`, data),
+  move: (id: string, data: {
+    newParentId?: string,
+    newOrder?: number,
+  }) => api.patch(`/documents/${id}/move`, data),
+  delete: (id: string) => api.delete(`/documents/${id}`),
 };
 
 export default api;

@@ -39,7 +39,6 @@ router.get('/google/url', function(req: Request, res: Response) {
     state: 'security_token',
   });
 
-  console.log('Generated URL:', url); // Debug: see the full URL
   res.json({ url });
 });
 
