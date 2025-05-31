@@ -50,7 +50,7 @@ const Project = () => {
         
         // Load project documents
         const docsResponse = await documents.getByProject(id);
-        setProjectDocs(docsResponse.data);
+        setProjectDocs(docsResponse.data as Document[]);
       } catch (error) {
         console.error('Failed to load project data:', error);
       } finally {
@@ -74,7 +74,7 @@ const Project = () => {
       });
       
       // Add the new document to the list
-      setProjectDocs([...projectDocs, response.data]);
+      setProjectDocs([...projectDocs, response.data as Document]);
       
       // Clear the form
       setNewDocumentTitle('');

@@ -1,9 +1,9 @@
 import express from 'express';
-import { Request, Response } from 'express';
-import Document from '../models/Document';
-import Project from '../models/Project';
-import User from '../models/User';
-import GoogleService from '../services/GoogleService';
+import type { Request, Response } from 'express';
+import Document from '../models/Document.js';
+import Project from '../models/Project.js';
+import User from '../models/User.js';
+import GoogleService from '../services/GoogleService.js';
 
 const router = express.Router();
 
@@ -76,15 +76,19 @@ router.post('/', function(req: Request, res: Response) {
           parentFolderId = parentDoc.googleDriveId || project.rootFolderId;
         }
       }
+      
+      // Convert null to undefined to match createFolder parameter type
+      const safeParentFolderId = parentFolderId ?? undefined;
 
-      let googleDocId: string | undefined;
-      let googleDriveId: string | undefined;
+      // Initialize document IDs
+      let googleDriveId = '';
+      let googleDocId = '';
 
       try {
         if (documentType === 'folder') {
-          googleDriveId = await googleService.createFolder(title, parentFolderId);
+          googleDriveId = await googleService.createFolder(title, safeParentFolderId);
         } else {
-          const docInfo = await googleService.createDocument(title, parentFolderId);
+          const docInfo = await googleService.createDocument(title, safeParentFolderId);
           googleDriveId = docInfo.driveId;
           googleDocId = docInfo.docId;
         }
