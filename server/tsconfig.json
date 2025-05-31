@@ -10,18 +10,16 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "declaration": true,
-    "outDir": "./server/dist",
-    "rootDir": "./server/src",
+    "outDir": "./dist",
+    "rootDir": "./src",
     "removeComments": true,
-    "noEmitOnError": false,
-    "allowImportingTsExtensions": false
+    "noEmitOnError": false
   },
   "include": [
-    "*.ts"
+    "src/**/*"
   ],
   "exclude": [
     "node_modules",
-    "server",
-    "client"
+    "dist"
   ]
 }
