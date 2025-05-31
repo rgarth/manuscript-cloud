@@ -1,7 +1,9 @@
-// client/src/pages/Project.tsx
+// Update client/src/pages/Project.tsx
+
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projects, documents } from '../services/api';
+import DocumentDeleteModal from '../components/DocumentDeleteModal';
 import './Project.css';
 
 interface Document {
@@ -35,54 +37,51 @@ const Project = () => {
   const navigate = useNavigate();
   const [project, setProject] = useState<ProjectData | null>(null);
   const [projectDocs, setProjectDocs] = useState<Document[]>([]);
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [newDocumentTitle, setNewDocumentTitle] = useState('');
-  const [selectedDocType, setSelectedDocType] = useState('scene');
+  const [selectedDocType, setSelectedDocType] = useState('chapter');
   const [selectedParentId, setSelectedParentId] = useState<string | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
 
-  // Document types - folders vs actual docs
-  const documentTypes = [
-    // Organizational folders
-    { value: 'book', label: '📚 Book', description: 'Top-level book container', isFolder: true },
-    { value: 'part', label: '📑 Part', description: 'Optional book section', isFolder: true },
-    { value: 'chapter', label: '📖 Chapter', description: 'Chapter folder (contains scenes)', isFolder: true },
-    
-    // Actual documents
-    { value: 'scene', label: '🎬 Scene', description: 'Individual scene document', isFolder: false },
-    { value: 'character', label: '👤 Character', description: 'Character notes', isFolder: false },
-    { value: 'place', label: '🏛️ Place', description: 'Location/setting notes', isFolder: false },
-    { value: 'note', label: '📝 Note', description: 'General notes', isFolder: false },
-    { value: 'research', label: '📚 Research', description: 'Research materials', isFolder: false }
-  ];
+  // Delete modal state
+  const [deleteModal, setDeleteModal] = useState<{
+    isOpen: boolean;
+    document: Document | null;
+    isDeleting: boolean;
+  }>({
+    isOpen: false,
+    document: null,
+    isDeleting: false
+  });
 
   useEffect(() => {
     if (!id) return;
+    
+    const loadProjectData = async () => {
+      setIsLoading(true);
+      try {
+        // Load project details
+        const projectResponse = await projects.getById(id);
+        setProject(projectResponse.data as ProjectData);
+        
+        // Load project documents
+        const docsResponse = await documents.getByProject(id);
+        setProjectDocs(docsResponse.data as Document[]);
+      } catch (error) {
+        console.error('Failed to load project data:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
     loadProjectData();
   }, [id]);
 
-  const loadProjectData = async () => {
-    setIsLoading(true);
-    try {
-      const [projectResponse, docsResponse] = await Promise.all([
-        projects.getById(id!),
-        documents.getByProject(id!)
-      ]);
-      
-      setProject(projectResponse.data as ProjectData);
-      setProjectDocs(docsResponse.data as Document[]);
-    } catch (error) {
-      console.error('Failed to load project data:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleCreateDocument = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newDocumentTitle.trim() || !project) return;
+    if (!newDocumentTitle.trim() || !project || isCreating) return;
     
+    setIsCreating(true);
     try {
       const response = await documents.create({
         title: newDocumentTitle,
@@ -91,98 +90,154 @@ const Project = () => {
         projectId: project._id,
       });
       
+      // Add the new document to the list
       setProjectDocs([...projectDocs, response.data as Document]);
+      
+      // Clear the form
       setNewDocumentTitle('');
     } catch (error) {
       console.error('Failed to create document:', error);
-      alert('Failed to create document. Please try again.');
-    }
-  };
-
-  const handleSync = async (fullSync: boolean = false) => {
-    if (!project || isSyncing) return;
-    
-    setIsSyncing(true);
-    try {
-      await projects.sync(project._id, fullSync);
-      // Reload project data after sync
-      await loadProjectData();
-      alert('Project synced successfully!');
-    } catch (error) {
-      console.error('Failed to sync project:', error);
-      alert('Failed to sync project. Please try again.');
     } finally {
-      setIsSyncing(false);
+      setIsCreating(false);
     }
   };
 
-  // Organize documents into tree structure
-  const buildDocumentTree = () => {
+  const handleDeleteClick = (document: Document, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDeleteModal({
+      isOpen: true,
+      document,
+      isDeleting: false
+    });
+  };
+
+  const handleDeleteConfirm = async (force: boolean = false) => {
+    if (!deleteModal.document) return;
+
+    setDeleteModal(prev => ({ ...prev, isDeleting: true }));
+
+    try {
+      await documents.delete(deleteModal.document._id, force);
+      
+      // Remove the document and its descendants from local state
+      const deleteDocumentAndDescendants = (docId: string): Document[] => {
+        const remainingDocs = projectDocs.filter(doc => {
+          if (doc._id === docId) return false;
+          
+          // Check if this document is a descendant of the deleted document
+          let currentDoc = doc;
+          while (currentDoc.parent) {
+            if (currentDoc.parent === docId) return false;
+            currentDoc = projectDocs.find(d => d._id === currentDoc.parent) || currentDoc;
+            if (currentDoc === doc) break; // Prevent infinite loop
+          }
+          
+          return true;
+        });
+        return remainingDocs;
+      };
+      
+      setProjectDocs(deleteDocumentAndDescendants(deleteModal.document._id));
+      
+      // Close modal
+      setDeleteModal({
+        isOpen: false,
+        document: null,
+        isDeleting: false
+      });
+      
+      console.log('Document deleted successfully');
+    } catch (error) {
+      console.error('Failed to delete document:', error);
+      setDeleteModal(prev => ({ ...prev, isDeleting: false }));
+      // You might want to show an error message to the user here
+    }
+  };
+
+  const handleDeleteCancel = () => {
+    setDeleteModal({
+      isOpen: false,
+      document: null,
+      isDeleting: false
+    });
+  };
+
+  // Function to organize documents into a tree structure
+  const organizeDocuments = () => {
     const rootDocs = projectDocs.filter(doc => doc.parent === null);
     return rootDocs.sort((a, b) => a.order - b.order);
   };
 
-  const getChildrenOf = (parentId: string): Document[] => {
+  // Get children of a specific document
+  const getChildrenOf = (parentId: string) => {
     return projectDocs
       .filter(doc => doc.parent === parentId)
       .sort((a, b) => a.order - b.order);
   };
 
-  // Recursive component for document tree
-  const DocumentTreeNode: React.FC<{ 
-    document: Document; 
-    level: number;
-    onSelect: (docId: string) => void;
-    selectedId: string | null;
-  }> = ({ document, level, onSelect, selectedId }) => {
-    const [isExpanded, setIsExpanded] = useState(true);
-    const children = getChildrenOf(document._id);
-    const hasChildren = children.length > 0;
-    const isSelected = selectedId === document._id;
-
-    const getDocumentIcon = (type: string) => {
-      const typeInfo = documentTypes.find(t => t.value === type);
-      return typeInfo?.label.split(' ')[0] || '📄';
+  // Get the icon for each document type
+  const getDocumentIcon = (type: string) => {
+    const icons: Record<string, string> = {
+      folder: '📁',
+      part: '📚',
+      chapter: '📖',
+      scene: '🎬',
+      character: '👤',
+      setting: '🏞️',
+      note: '📝',
+      research: '🔬'
     };
+    return icons[type] || '📄';
+  };
 
+  // Recursive component to render document tree
+  const DocumentNode = ({ document, level = 0 }: { document: Document; level?: number }) => {
+    const children = getChildrenOf(document._id);
+    const indent = level * 20;
+    
     return (
-      <div className="document-tree-node">
+      <div className="document-node">
         <div 
-          className={`document-item ${document.documentType} ${isSelected ? 'selected' : ''}`}
-          style={{ paddingLeft: `${level * 20}px` }}
-          onClick={() => onSelect(document._id)}
+          className={`document-item ${document.documentType}`}
+          style={{ paddingLeft: `${indent}px` }}
         >
-          {hasChildren && (
-            <button 
-              className="expand-button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsExpanded(!isExpanded);
-              }}
+          <div className="document-info">
+            <span className="document-icon">
+              {getDocumentIcon(document.documentType)}
+            </span>
+            <span className="document-title">{document.title}</span>
+            <span className={`document-type-badge ${document.documentType}`}>
+              {document.documentType}
+            </span>
+          </div>
+          
+          <div className="document-actions">
+            {document.googleDocId && (
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                title="Open in Google Docs"
+                onClick={() => window.open(`https://docs.google.com/document/d/${document.googleDocId}/edit`, '_blank')}
+              >
+                📝
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn btn-sm btn-danger"
+              onClick={(e) => handleDeleteClick(document, e)}
+              title={`Delete ${document.documentType}`}
             >
-              {isExpanded ? '▼' : '▶'}
+              🗑️
             </button>
-          )}
-          
-          <span className="document-icon">
-            {getDocumentIcon(document.documentType)}
-          </span>
-          
-          <span className="document-title">{document.title}</span>
-          
-          <span className="document-type-badge">{document.documentType}</span>
+          </div>
         </div>
         
-        {hasChildren && isExpanded && (
+        {children.length > 0 && (
           <div className="document-children">
             {children.map(child => (
-              <DocumentTreeNode 
-                key={child._id} 
-                document={child} 
-                level={level + 1}
-                onSelect={onSelect}
-                selectedId={selectedId}
-              />
+              <DocumentNode key={child._id} document={child} level={level + 1} />
             ))}
           </div>
         )}
@@ -191,181 +246,148 @@ const Project = () => {
   };
 
   if (isLoading) {
-    return <div className="loading">Loading project...</div>;
+    return (
+      <div className="loading-container">
+        <div className="spinner large"></div>
+        <p>Loading project...</p>
+      </div>
+    );
   }
 
   if (!project) {
-    return <div className="error">Project not found</div>;
+    return (
+      <div className="error-container">
+        <h2>Project not found</h2>
+        <button onClick={() => navigate('/dashboard')} className="btn btn-primary">
+          ← Back to Dashboard
+        </button>
+      </div>
+    );
   }
 
-  const rootDocuments = buildDocumentTree();
+  const rootDocuments = organizeDocuments();
 
   return (
     <div className="project-page">
       <header className="project-header">
         <div className="project-info">
-          <h1>{project.name}</h1>
-          {project.description && <p>{project.description}</p>}
+          <h1>📚 {project.name}</h1>
+          {project.description && <p className="project-description">{project.description}</p>}
+          <p className="project-meta">
+            Created: {new Date(project.createdAt).toLocaleDateString()} | 
+            Documents: {projectDocs.length}
+          </p>
         </div>
-        <button 
-          className="back-button"
-          onClick={() => navigate('/dashboard')}
-        >
-          ← Back to Dashboard
-        </button>
-        <button 
-          className="sync-button"
-          onClick={() => handleSync(true)}
-          disabled={isSyncing}
-        >
-          {isSyncing ? '🔄 Syncing...' : '🔄 Sync with Google Drive'}
-        </button>
+        <div className="project-actions">
+          <button onClick={() => navigate('/dashboard')} className="btn btn-secondary">
+            ← Dashboard
+          </button>
+        </div>
       </header>
 
       <div className="project-content">
-        <aside className="sidebar">
-          <div className="sidebar-section">
-            <h3>Documents</h3>
-            
-            <form onSubmit={handleCreateDocument} className="new-document-form">
+        <aside className="document-sidebar">
+          <div className="sidebar-header">
+            <h2>📋 Project Structure</h2>
+          </div>
+          
+          <div className="create-document-section">
+            <h3>Add New Document</h3>
+            <form onSubmit={handleCreateDocument} className="create-document-form">
               <input
                 type="text"
                 value={newDocumentTitle}
                 onChange={(e) => setNewDocumentTitle(e.target.value)}
-                placeholder="New document title"
-                className="title-input"
+                placeholder="Document title..."
+                className="document-input"
+                disabled={isCreating}
               />
               
               <select 
                 value={selectedDocType}
                 onChange={(e) => setSelectedDocType(e.target.value)}
-                className="type-select"
+                className="document-type-select"
+                disabled={isCreating}
               >
-                {documentTypes.map(type => (
-                  <option key={type.value} value={type.value}>
-                    {type.label}
-                  </option>
-                ))}
+                <option value="folder">📁 Folder</option>
+                <option value="part">📚 Part</option>
+                <option value="chapter">📖 Chapter</option>
+                <option value="scene">🎬 Scene</option>
+                <option value="character">👤 Character</option>
+                <option value="setting">🏞️ Setting</option>
+                <option value="note">📝 Note</option>
+                <option value="research">🔬 Research</option>
               </select>
               
               <select
                 value={selectedParentId || ''}
                 onChange={(e) => setSelectedParentId(e.target.value || null)}
                 className="parent-select"
+                disabled={isCreating}
               >
-                <option value="">📚 Root Level</option>
+                <option value="">📁 Root Level</option>
                 {projectDocs
-                  .filter(doc => ['book', 'part', 'chapter'].includes(doc.documentType))
+                  .filter(doc => doc.documentType === 'folder' || doc.documentType === 'part')
                   .map(folder => (
                     <option key={folder._id} value={folder._id}>
-                      {documentTypes.find(t => t.value === folder.documentType)?.label.split(' ')[0]} {folder.title}
+                      {getDocumentIcon(folder.documentType)} {folder.title}
                     </option>
                   ))
                 }
               </select>
               
-              <button type="submit" className="add-button">
-                + Add
+              <button 
+                type="submit" 
+                className="btn btn-primary"
+                disabled={isCreating || !newDocumentTitle.trim()}
+              >
+                {isCreating ? (
+                  <>
+                    <span className="spinner small"></span>
+                    Adding...
+                  </>
+                ) : (
+                  '✨ Add Document'
+                )}
               </button>
             </form>
           </div>
           
-          <div className="sidebar-section">
-            <div className="document-tree">
-              {rootDocuments.length === 0 ? (
-                <div className="empty-state">
-                  <p>No documents yet.</p>
-                  <p>Create your first document above! 👆</p>
-                </div>
-              ) : (
-                rootDocuments.map(doc => (
-                  <DocumentTreeNode 
-                    key={doc._id} 
-                    document={doc} 
-                    level={0}
-                    onSelect={setSelectedDocId}
-                    selectedId={selectedDocId}
-                  />
-                ))
-              )}
-            </div>
+          <div className="document-tree">
+            {rootDocuments.length === 0 ? (
+              <div className="empty-documents">
+                <div className="empty-icon">📄</div>
+                <p>No documents yet.</p>
+                <p>Create your first document above!</p>
+              </div>
+            ) : (
+              <div className="document-list">
+                {rootDocuments.map(doc => (
+                  <DocumentNode key={doc._id} document={doc} />
+                ))}
+              </div>
+            )}
           </div>
         </aside>
         
-        <main className="main-content">
-          {selectedDocId ? (
-            <DocumentViewer documentId={selectedDocId} />
-          ) : (
-            <div className="welcome-content">
-              <h2>Welcome to {project.name}</h2>
-              <p>Select a document from the sidebar to view or edit it.</p>
-              <div className="quick-tips">
-                <h3>Document Structure:</h3>
-                <ul>
-                  <li>📚 <strong>Books</strong> → 📑 <strong>Parts</strong> → 📖 <strong>Chapters</strong> (folders)</li>
-                  <li>🎬 <strong>Scenes</strong> are individual Google Docs within chapters</li>
-                  <li><strong>Drag scenes</strong> between chapters or reorder within chapters</li>
-                  <li>👤 <strong>Characters</strong>, 🏛️ <strong>Places</strong>, 📝 <strong>Notes</strong> (reference docs)</li>
-                  <li>Only <strong>scenes</strong> get compiled into your final manuscript</li>
-                </ul>
-              </div>
-            </div>
-          )}
+        <main className="document-workspace">
+          <div className="workspace-placeholder">
+            <div className="placeholder-icon">✨</div>
+            <h3>Select a document to edit</h3>
+            <p>Choose a document from the project structure on the left to view or edit its content.</p>
+          </div>
         </main>
       </div>
-    </div>
-  );
-};
 
-// Simple document viewer component
-const DocumentViewer: React.FC<{ documentId: string }> = ({ documentId }) => {
-  const [content, setContent] = useState<any>(null);
-  const [isLoading, setIsLoading] = useState(false);
-
-  useEffect(() => {
-    loadDocumentContent();
-  }, [documentId]);
-
-  const loadDocumentContent = async () => {
-    setIsLoading(true);
-    try {
-      const response = await documents.getContent(documentId);
-      setContent(response.data);
-    } catch (error) {
-      console.error('Failed to load document content:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  if (isLoading) {
-    return <div className="loading">Loading document...</div>;
-  }
-
-  return (
-    <div className="document-viewer">
-      <div className="document-actions">
-        <button 
-          className="edit-button"
-          onClick={() => {
-            // This will open Google Docs in a new tab
-            // We'll need the Google Docs URL
-            alert('Edit functionality coming soon - will open Google Docs');
-          }}
-        >
-          ✏️ Edit in Google Docs
-        </button>
-      </div>
-      
-      {content ? (
-        <div className="document-content">
-          <h2>{content.title}</h2>
-          {/* We'll need to render Google Docs content here */}
-          <p>Document content will be displayed here</p>
-        </div>
-      ) : (
-        <div>No content available</div>
-      )}
+      <DocumentDeleteModal
+        isOpen={deleteModal.isOpen}
+        documentId={deleteModal.document?._id || null}
+        documentName={deleteModal.document?.title || ''}
+        documentType={deleteModal.document?.documentType || ''}
+        onConfirm={handleDeleteConfirm}
+        onCancel={handleDeleteCancel}
+        isDeleting={deleteModal.isDeleting}
+      />
     </div>
   );
 };

@@ -1,4 +1,3 @@
-// server/src/routes/documents.ts
 import express from 'express';
 import type { Request, Response } from 'express';
 import Document from '../models/Document.js';
@@ -67,30 +66,29 @@ router.post('/', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      // Fix: Pass userId as third argument
-      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
+      const googleService = new GoogleService(user.accessToken, user.refreshToken);
 
       // Find parent folder ID in Google Drive
-      let parentFolderId: string | undefined = project.rootFolderId || undefined;
+      let parentFolderId = project.rootFolderId;
       if (parentId) {
         const parentDoc = await Document.findById(parentId);
-        if (parentDoc && parentDoc.googleDriveId) {
-          parentFolderId = parentDoc.googleDriveId;
+        if (parentDoc) {
+          parentFolderId = parentDoc.googleDriveId || project.rootFolderId;
         }
       }
+      
+      // Convert null to undefined to match createFolder parameter type
+      const safeParentFolderId = parentFolderId ?? undefined;
 
       // Initialize document IDs
       let googleDriveId = '';
       let googleDocId = '';
 
       try {
-        // Folders: book, part, chapter
-        if (['book', 'part', 'chapter'].includes(documentType)) {
-          googleDriveId = await googleService.createFolder(title, parentFolderId);
-          // Folders don't have Google Doc IDs
+        if (documentType === 'folder') {
+          googleDriveId = await googleService.createFolder(title, safeParentFolderId);
         } else {
-          // Documents: scene, character, place, note, research
-          const docInfo = await googleService.createDocument(title, parentFolderId);
+          const docInfo = await googleService.createDocument(title, safeParentFolderId);
           googleDriveId = docInfo.driveId;
           googleDocId = docInfo.docId;
         }
@@ -166,8 +164,7 @@ router.get('/:id/content', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      // Fix: Pass userId as third argument
-      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
+      const googleService = new GoogleService(user.accessToken, user.refreshToken);
 
       try {
         const content = await googleService.getDocumentContent(document.googleDocId);
@@ -229,13 +226,12 @@ router.patch('/:id', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Move document to new parent/position
-router.patch('/:id/move', function(req: Request, res: Response) {
+// Check if document can be deleted (for folders, check if empty)
+router.get('/:id/can-delete', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
       const { id } = req.params;
       const userId = req.headers['user-id'] as string;
-      const { newParentId, newOrder } = req.body;
 
       const document = await Document.findById(id);
       if (!document) {
@@ -249,42 +245,37 @@ router.patch('/:id/move', function(req: Request, res: Response) {
       }
       
       if (project.owner.toString() !== userId) {
-        return res.status(403).json({ error: 'Not authorized to modify this document' });
+        return res.status(403).json({ error: 'Not authorized to access this document' });
       }
 
-      // Validate the move
-      if (newParentId) {
-        const newParent = await Document.findById(newParentId);
-        if (!newParent) {
-          return res.status(404).json({ error: 'New parent not found' });
-        }
-        
-        // Ensure we're not creating circular references
-        if (newParentId === id) {
-          return res.status(400).json({ error: 'Cannot move document to itself' });
-        }
-        
-        // Only folders can contain other documents
-        if (!['book', 'part', 'chapter'].includes(newParent.documentType)) {
-          return res.status(400).json({ error: 'Can only move documents into folders' });
-        }
+      // If it's a folder, check if it has children
+      let canDelete = true;
+      let childCount = 0;
+      let children: any[] = [];
+
+      if (document.documentType === 'folder') {
+        children = await Document.find({ parent: id }).select('title documentType');
+        childCount = children.length;
+        canDelete = childCount === 0;
       }
 
-      // Update the document
-      document.parent = newParentId || null;
-      if (newOrder !== undefined) {
-        document.order = newOrder;
-      }
-
-      await document.save();
-      
-      // TODO: Move the actual Google Drive file if needed
-      // This would require updating the Google Drive parent folder
-      
-      return res.json(document);
+      return res.json({
+        canDelete,
+        childCount,
+        children: children.map(child => ({
+          id: child._id,
+          title: child.title,
+          type: child.documentType
+        })),
+        document: {
+          id: document._id,
+          title: document.title,
+          type: document.documentType
+        }
+      });
     } catch (error) {
-      console.error('Move document error:', error);
-      return res.status(500).json({ error: 'Failed to move document' });
+      console.error('Check delete error:', error);
+      return res.status(500).json({ error: 'Failed to check if document can be deleted' });
     }
   };
   
@@ -297,6 +288,7 @@ router.delete('/:id', function(req: Request, res: Response) {
     try {
       const { id } = req.params;
       const userId = req.headers['user-id'] as string;
+      const { force } = req.query; // Add force parameter for deleting non-empty folders
 
       const document = await Document.findById(id);
       if (!document) {
@@ -313,23 +305,77 @@ router.delete('/:id', function(req: Request, res: Response) {
         return res.status(403).json({ error: 'Not authorized to delete this document' });
       }
 
-      // Delete from Google Drive if needed
-      if (document.googleDriveId) {
-        const user = await User.findById(userId);
-        if (user && user.accessToken && user.refreshToken) {
-          try {
-            // Fix: Pass userId as third argument
-            const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
-            await googleService.deleteFile(document.googleDriveId);
-          } catch (googleError) {
-            console.error('Failed to delete from Google Drive:', googleError);
-            // Continue with local deletion even if Google Drive deletion fails
-          }
+      // Get user for Google Drive operations
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // If it's a folder and force is not specified, check if it has children
+      if (document.documentType === 'folder' && force !== 'true') {
+        const childCount = await Document.countDocuments({ parent: id });
+        if (childCount > 0) {
+          return res.status(400).json({ 
+            error: 'Cannot delete non-empty folder',
+            code: 'FOLDER_NOT_EMPTY',
+            childCount 
+          });
         }
       }
 
-      await Document.findByIdAndDelete(id);
-      return res.json({ success: true, message: 'Document deleted successfully' });
+      // Get all descendants if force deleting a folder
+      let documentsToDelete = [document];
+      if (document.documentType === 'folder' && force === 'true') {
+        // Recursively get all descendants
+        const getAllDescendants = async (parentId: string): Promise<any[]> => {
+          const children = await Document.find({ parent: parentId });
+          let descendants = [...children];
+          
+          for (const child of children) {
+            if (child.documentType === 'folder') {
+              const childDescendants = await getAllDescendants(child._id);
+              descendants = descendants.concat(childDescendants);
+            }
+          }
+          
+          return descendants;
+        };
+        
+        const descendants = await getAllDescendants(id);
+        documentsToDelete = [document, ...descendants];
+      }
+
+      // Delete from Google Drive if needed
+      if (user.accessToken && user.refreshToken) {
+        try {
+          const googleService = new GoogleService(user.accessToken, user.refreshToken);
+          
+          for (const doc of documentsToDelete) {
+            if (doc.googleDriveId) {
+              try {
+                await googleService.deleteFile(doc.googleDriveId);
+                console.log(`🗑️ Deleted Google Drive file: ${doc.googleDriveId}`);
+              } catch (googleError) {
+                console.error(`Failed to delete from Google Drive: ${doc.googleDriveId}`, googleError);
+                // Continue with local deletion even if Google Drive deletion fails
+              }
+            }
+          }
+        } catch (googleError) {
+          console.error('Failed to initialize Google Service:', googleError);
+          // Continue with local deletion even if Google Drive deletion fails
+        }
+      }
+
+      // Delete all documents from database (in reverse order to handle dependencies)
+      const docIds = documentsToDelete.map(doc => doc._id);
+      await Document.deleteMany({ _id: { $in: docIds } });
+
+      return res.json({ 
+        success: true, 
+        message: `Successfully deleted ${documentsToDelete.length} document(s)`,
+        deletedCount: documentsToDelete.length
+      });
     } catch (error) {
       console.error('Delete document error:', error);
       return res.status(500).json({ error: 'Failed to delete document' });
