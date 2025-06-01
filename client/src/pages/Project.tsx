@@ -1,4 +1,4 @@
-// client/src/pages/Project.tsx
+// client/src/pages/Project.tsx - UPDATED FOR PROPER FOLDER STRUCTURE
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -7,20 +7,20 @@ import DocumentDeleteModal from '../components/DocumentDeleteModal';
 import './Project.css';
 
 interface Document {
-  _id: string;
+  _id?: string; // MongoDB ID (optional, for cached docs)
+  id: string; // Google Drive ID
   title: string;
   documentType: string;
-  parent: string | null;
-  googleDocId?: string;
-  googleDriveId?: string;
-  synopsis?: string;
+  parentId?: string;
   order: number;
-  metadata: {
-    status?: string;
-    tags?: string[];
-    wordCount?: number;
-    customFields?: Record<string, any>;
-  };
+  synopsis?: string;
+  status?: 'draft' | 'review' | 'final' | 'published';
+  tags?: string[];
+  includeInCompile?: boolean;
+  wordCount?: number;
+  createdAt: string;
+  updatedAt: string;
+  customFields?: Record<string, any>;
 }
 
 interface ProjectData {
@@ -30,6 +30,16 @@ interface ProjectData {
   rootFolderId: string;
   createdAt: string;
   updatedAt: string;
+  metadata?: {
+    structure?: {
+      chaptersId: string;
+      notesId: string;
+      charactersId: string;
+      researchId: string;
+      placesId: string;
+      miscId: string;
+    };
+  };
 }
 
 const Project = () => {
@@ -39,7 +49,7 @@ const Project = () => {
   const [projectDocs, setProjectDocs] = useState<Document[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [newDocumentTitle, setNewDocumentTitle] = useState('');
-  const [selectedDocType, setSelectedDocType] = useState('chapter');
+  const [selectedDocType, setSelectedDocType] = useState('scene');
   const [selectedParentId, setSelectedParentId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
@@ -64,7 +74,7 @@ const Project = () => {
         const projectResponse = await projects.getById(id);
         setProject(projectResponse.data as ProjectData);
         
-        // Load project documents
+        // Load project documents from JSON index
         const docsResponse = await documents.getByProject(id);
         setProjectDocs(docsResponse.data as Document[]);
       } catch (error) {
@@ -83,10 +93,18 @@ const Project = () => {
     
     setIsCreating(true);
     try {
+      // Determine the correct parent ID based on document type and selection
+      let parentId = selectedParentId;
+      
+      if (!parentId || parentId === 'root') {
+        // Use appropriate default parent based on document type
+        parentId = getDefaultParentForType(selectedDocType);
+      }
+      
       const response = await documents.create({
         title: newDocumentTitle,
         documentType: selectedDocType,
-        parentId: selectedParentId ?? undefined,
+        parentId: parentId,
         projectId: project._id,
       });
       
@@ -95,10 +113,33 @@ const Project = () => {
       
       // Clear the form
       setNewDocumentTitle('');
+      setSelectedParentId(null);
     } catch (error) {
       console.error('Failed to create document:', error);
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  const getDefaultParentForType = (documentType: string): string => {
+    const structure = project?.metadata?.structure;
+    if (!structure) return project?.rootFolderId || '';
+    
+    switch (documentType) {
+      case 'chapter':
+      case 'scene':
+        return structure.chaptersId;
+      case 'character':
+        return structure.charactersId;
+      case 'setting':
+      case 'place':
+        return structure.placesId;
+      case 'research':
+        return structure.researchId;
+      case 'note':
+        return structure.miscId;
+      default:
+        return structure.chaptersId;
     }
   };
 
@@ -118,25 +159,25 @@ const Project = () => {
     setDeleteModal(prev => ({ ...prev, isDeleting: true }));
 
     try {
-      await documents.delete(deleteModal.document._id, force);
+      await documents.delete(deleteModal.document.id, force);
       
       // Remove the document and its descendants from local state
       const deleteDocumentAndDescendants = (docId: string): void => {
         setProjectDocs(prevDocs => {
           const remainingDocs = prevDocs.filter(doc => {
-            if (doc._id === docId) return false;
+            if (doc.id === docId) return false;
             
             // Check if this document is a descendant of the deleted document
-            let currentParentId = doc.parent;
+            let currentParentId = doc.parentId;
             const visited = new Set<string>();
             
             while (currentParentId && !visited.has(currentParentId)) {
               visited.add(currentParentId);
               if (currentParentId === docId) return false;
               
-              const parentId = currentParentId; // Create a new constant to capture the current value
-              const parentDoc = prevDocs.find(d => d._id === parentId);
-              currentParentId = parentDoc?.parent || null;
+              // eslint-disable-next-line no-loop-func
+              const parentDoc = prevDocs.find(d => d.id === currentParentId);
+              currentParentId = parentDoc?.parentId;
             }
             
             return true;
@@ -145,7 +186,7 @@ const Project = () => {
         });
       };
       
-      deleteDocumentAndDescendants(deleteModal.document._id);
+      deleteDocumentAndDescendants(deleteModal.document.id);
       
       // Close modal
       setDeleteModal({
@@ -158,7 +199,6 @@ const Project = () => {
     } catch (error) {
       console.error('Failed to delete document:', error);
       setDeleteModal(prev => ({ ...prev, isDeleting: false }));
-      // You might want to show an error message to the user here
     }
   };
 
@@ -172,14 +212,14 @@ const Project = () => {
 
   // Function to organize documents into a tree structure
   const organizeDocuments = () => {
-    const rootDocs = projectDocs.filter(doc => doc.parent === null);
+    const rootDocs = projectDocs.filter(doc => !doc.parentId || doc.parentId === project?.rootFolderId);
     return rootDocs.sort((a, b) => a.order - b.order);
   };
 
   // Get children of a specific document
   const getChildrenOf = (parentId: string) => {
     return projectDocs
-      .filter(doc => doc.parent === parentId)
+      .filter(doc => doc.parentId === parentId)
       .sort((a, b) => a.order - b.order);
   };
 
@@ -192,22 +232,104 @@ const Project = () => {
       scene: '🎬',
       character: '👤',
       setting: '🏞️',
+      place: '🗺️',
       note: '📝',
       research: '🔬'
     };
     return icons[type] || '📄';
   };
 
+  // Get available parent folders for the document type selector
+  const getAvailableParents = (documentType: string) => {
+    const structure = project?.metadata?.structure;
+    const options = [{ id: 'root', name: '📁 Default Location', disabled: false }];
+    
+    if (structure) {
+      // Add main folders based on document type
+      switch (documentType) {
+        case 'chapter':
+        case 'scene':
+          options.push({ 
+            id: structure.chaptersId, 
+            name: '📖 Chapters', 
+            disabled: false 
+          });
+          // Add existing chapters as options for scenes
+          if (documentType === 'scene') {
+            const chapters = projectDocs.filter(doc => 
+              doc.documentType === 'chapter' && 
+              doc.parentId === structure.chaptersId
+            );
+            chapters.forEach(chapter => {
+              options.push({
+                id: chapter.id,
+                name: `   📖 ${chapter.title}`,
+                disabled: false
+              });
+            });
+          }
+          break;
+          
+        case 'character':
+          options.push({ 
+            id: structure.charactersId, 
+            name: '👤 Characters', 
+            disabled: false 
+          });
+          break;
+          
+        case 'setting':
+        case 'place':
+          options.push({ 
+            id: structure.placesId, 
+            name: '🗺️ Places', 
+            disabled: false 
+          });
+          break;
+          
+        case 'research':
+          options.push({ 
+            id: structure.researchId, 
+            name: '🔬 Research', 
+            disabled: false 
+          });
+          break;
+          
+        case 'note':
+          options.push({ 
+            id: structure.miscId, 
+            name: '📝 Notes', 
+            disabled: false 
+          });
+          break;
+      }
+    }
+    
+    // Add other folders as options
+    const folders = projectDocs.filter(doc => 
+      doc.documentType === 'folder' || doc.documentType === 'part'
+    );
+    folders.forEach(folder => {
+      options.push({
+        id: folder.id,
+        name: `${getDocumentIcon(folder.documentType)} ${folder.title}`,
+        disabled: false
+      });
+    });
+    
+    return options;
+  };
+
   // Recursive component to render document tree
   const DocumentNode = ({ document, level = 0 }: { document: Document; level?: number }) => {
-    const children = getChildrenOf(document._id);
+    const children = getChildrenOf(document.id);
     const indent = level * 20;
     
     return (
       <div className="document-node">
         <div 
           className={`document-item ${document.documentType}`}
-          style={{ paddingLeft: `${indent}px` }}
+          style={{ paddingLeft: `${indent + 12}px` }}
         >
           <div className="document-info">
             <span className="document-icon">
@@ -220,12 +342,14 @@ const Project = () => {
           </div>
           
           <div className="document-actions">
-            {document.googleDocId && (
+            {(document.documentType === 'scene' || document.documentType === 'character' || 
+              document.documentType === 'setting' || document.documentType === 'research' || 
+              document.documentType === 'note') && (
               <button
                 type="button"
                 className="btn btn-sm btn-secondary"
                 title="Open in Google Docs"
-                onClick={() => window.open(`https://docs.google.com/document/d/${document.googleDocId}/edit`, '_blank')}
+                onClick={() => window.open(`https://docs.google.com/document/d/${document.id}/edit`, '_blank')}
               >
                 📝
               </button>
@@ -244,7 +368,7 @@ const Project = () => {
         {children.length > 0 && (
           <div className="document-children">
             {children.map(child => (
-              <DocumentNode key={child._id} document={child} level={level + 1} />
+              <DocumentNode key={child.id} document={child} level={level + 1} />
             ))}
           </div>
         )}
@@ -273,6 +397,7 @@ const Project = () => {
   }
 
   const rootDocuments = organizeDocuments();
+  const availableParents = getAvailableParents(selectedDocType);
 
   return (
     <div className="project-page">
@@ -312,18 +437,22 @@ const Project = () => {
               
               <select 
                 value={selectedDocType}
-                onChange={(e) => setSelectedDocType(e.target.value)}
+                onChange={(e) => {
+                  setSelectedDocType(e.target.value);
+                  setSelectedParentId(null); // Reset parent when type changes
+                }}
                 className="document-type-select"
                 disabled={isCreating}
               >
-                <option value="folder">📁 Folder</option>
-                <option value="part">📚 Part</option>
-                <option value="chapter">📖 Chapter</option>
                 <option value="scene">🎬 Scene</option>
+                <option value="chapter">📖 Chapter</option>
                 <option value="character">👤 Character</option>
                 <option value="setting">🏞️ Setting</option>
-                <option value="note">📝 Note</option>
+                <option value="place">🗺️ Place</option>
                 <option value="research">🔬 Research</option>
+                <option value="note">📝 Note</option>
+                <option value="folder">📁 Folder</option>
+                <option value="part">📚 Part</option>
               </select>
               
               <select
@@ -332,15 +461,15 @@ const Project = () => {
                 className="parent-select"
                 disabled={isCreating}
               >
-                <option value="">📁 Root Level</option>
-                {projectDocs
-                  .filter(doc => doc.documentType === 'folder' || doc.documentType === 'part')
-                  .map(folder => (
-                    <option key={folder._id} value={folder._id}>
-                      {getDocumentIcon(folder.documentType)} {folder.title}
-                    </option>
-                  ))
-                }
+                {availableParents.map(parent => (
+                  <option 
+                    key={parent.id} 
+                    value={parent.id === 'root' ? '' : parent.id}
+                    disabled={parent.disabled}
+                  >
+                    {parent.name}
+                  </option>
+                ))}
               </select>
               
               <button 
@@ -370,7 +499,7 @@ const Project = () => {
             ) : (
               <div className="document-list">
                 {rootDocuments.map(doc => (
-                  <DocumentNode key={doc._id} document={doc} />
+                  <DocumentNode key={doc.id} document={doc} />
                 ))}
               </div>
             )}
@@ -382,13 +511,23 @@ const Project = () => {
             <div className="placeholder-icon">✨</div>
             <h3>Select a document to edit</h3>
             <p>Choose a document from the project structure on the left to view or edit its content.</p>
+            <div className="structure-hint">
+              <h4>📁 Folder Structure:</h4>
+              <ul>
+                <li><strong>Chapters/</strong> - Chapter folders containing scenes</li>
+                <li><strong>Notes/Characters/</strong> - Character profiles</li>
+                <li><strong>Notes/Places/</strong> - Setting descriptions</li>
+                <li><strong>Notes/Research/</strong> - Research materials</li>
+                <li><strong>Notes/Misc/</strong> - General notes</li>
+              </ul>
+            </div>
           </div>
         </main>
       </div>
 
       <DocumentDeleteModal
         isOpen={deleteModal.isOpen}
-        documentId={deleteModal.document?._id || null}
+        documentId={deleteModal.document?.id || null}
         documentName={deleteModal.document?.title || ''}
         documentType={deleteModal.document?.documentType || ''}
         onConfirm={handleDeleteConfirm}
