@@ -44,6 +44,23 @@ const DocumentDeleteModal: React.FC<DocumentDeleteModalProps> = ({
   const [forceDelete, setForceDelete] = useState(false);
 
   useEffect(() => {
+    const checkCanDelete = async () => {
+      if (!documentId) return;
+      
+      setIsLoadingCheck(true);
+      setError(null);
+      
+      try {
+        const response = await documents.canDelete(documentId);
+        setCanDeleteData(response.data);
+      } catch (err) {
+        console.error('Failed to check if document can be deleted:', err);
+        setError('Failed to check deletion status');
+      } finally {
+        setIsLoadingCheck(false);
+      }
+    };
+
     if (isOpen && documentId) {
       checkCanDelete();
     } else {
@@ -52,23 +69,6 @@ const DocumentDeleteModal: React.FC<DocumentDeleteModalProps> = ({
       setForceDelete(false);
     }
   }, [isOpen, documentId]);
-
-  const checkCanDelete = async () => {
-    if (!documentId) return;
-    
-    setIsLoadingCheck(true);
-    setError(null);
-    
-    try {
-      const response = await documents.canDelete(documentId);
-      setCanDeleteData(response.data);
-    } catch (err) {
-      console.error('Failed to check if document can be deleted:', err);
-      setError('Failed to check deletion status');
-    } finally {
-      setIsLoadingCheck(false);
-    }
-  };
 
   const handleConfirm = () => {
     if (!isDeleting) {
@@ -182,8 +182,8 @@ const DocumentDeleteModal: React.FC<DocumentDeleteModalProps> = ({
             disabled={
               isDeleting || 
               isLoadingCheck || 
-              error !== null ||
-              (canDeleteData && !canDeleteData.canDelete && !forceDelete)
+              Boolean(error) ||
+              Boolean(canDeleteData && !canDeleteData.canDelete && !forceDelete)
             }
           >
             {isDeleting ? (

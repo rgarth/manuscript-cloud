@@ -134,7 +134,8 @@ const Project = () => {
               visited.add(currentParentId);
               if (currentParentId === docId) return false;
               
-              const parentDoc = prevDocs.find(d => d._id === currentParentId);
+              const parentId = currentParentId; // Create a new constant to capture the current value
+              const parentDoc = prevDocs.find(d => d._id === parentId);
               currentParentId = parentDoc?.parent || null;
             }
             
