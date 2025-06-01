@@ -1,4 +1,4 @@
-// server/src/index.ts - UPDATE YOUR EXISTING FILE
+// server/src/index.ts
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -8,7 +8,8 @@ import mongoose from 'mongoose';
 import authRoutes from './routes/auth.js';
 import projectRoutes from './routes/projects.js';
 import documentRoutes from './routes/documents.js';
-import testMetadataRoutes from './routes/test-metadata.js'; // ADD THIS LINE
+import testMetadataRoutes from './routes/test-metadata.js';
+import adminRoutes from './routes/admin.js';
 
 dotenv.config();
 
@@ -20,7 +21,8 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/documents', documentRoutes);
-app.use('/api/test', testMetadataRoutes); // ADD THIS LINE
+app.use('/api/test', testMetadataRoutes);
+app.use('/api/admin', adminRoutes); 
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

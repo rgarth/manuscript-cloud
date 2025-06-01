@@ -1,3 +1,6 @@
+// ========================================
+// server/src/routes/documents.ts - COMPLETELY FIXED
+// ========================================
 import express from 'express';
 import type { Request, Response } from 'express';
 import Document from '../models/Document.js';
@@ -7,25 +10,35 @@ import GoogleService from '../services/GoogleService.js';
 
 const router = express.Router();
 
-// Get all documents for a project
+// Get all documents for a project - READS FROM JSON FILES
 router.get('/project/:projectId', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
       const { projectId } = req.params;
       const userId = req.headers['user-id'] as string;
 
-      // Verify project access
+      if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
+      }
+
       const project = await Project.findById(projectId);
       if (!project) {
         return res.status(404).json({ error: 'Project not found' });
       }
 
-      // Optional: Check project ownership/permissions
       if (project.owner.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorized to access this project' });
       }
 
-      const documents = await Document.find({ project: projectId });
+      const user = await User.findById(userId);
+      if (!user?.accessToken || !user?.refreshToken) {
+        return res.status(400).json({ error: 'Missing authentication tokens' });
+      }
+
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+      const documents = await googleService.getDocuments(project.rootFolderId);
+
+      console.log(`📄 Retrieved ${documents.length} documents from JSON index`);
       return res.json(documents);
     } catch (error) {
       console.error('Error fetching documents:', error);
@@ -36,15 +49,19 @@ router.get('/project/:projectId', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Create new document
+// Create new document - SAVES TO JSON FILES
 router.post('/', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
       const { title, documentType, parentId, projectId, synopsis } = req.body;
       const userId = req.headers['user-id'] as string;
 
+      if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
+      }
+
       if (!title || !documentType || !projectId) {
-        return res.status(400).json({ error: 'Missing required fields' });
+        return res.status(400).json({ error: 'Missing required fields: title, documentType, projectId' });
       }
 
       const project = await Project.findById(projectId);
@@ -52,70 +69,52 @@ router.post('/', function(req: Request, res: Response) {
         return res.status(404).json({ error: 'Project not found' });
       }
 
-      // Check project ownership
       if (project.owner.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorized' });
       }
 
       const user = await User.findById(userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      if (!user.accessToken || !user.refreshToken) {
+      if (!user?.accessToken || !user?.refreshToken) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
 
-      // Find parent folder ID in Google Drive
+      // Determine parent folder ID
       let parentFolderId = project.rootFolderId;
-      if (parentId) {
-        const parentDoc = await Document.findById(parentId);
-        if (parentDoc) {
-          parentFolderId = parentDoc.googleDriveId || project.rootFolderId;
+      if (parentId && parentId !== 'root') {
+        const documents = await googleService.getDocuments(project.rootFolderId);
+        const parentDoc = documents.find(doc => doc.id === parentId);
+        if (parentDoc && parentDoc.documentType === 'folder') {
+          parentFolderId = parentDoc.id;
         }
       }
-      
-      // Convert null to undefined to match createFolder parameter type
-      const safeParentFolderId = parentFolderId ?? undefined;
 
-      // Initialize document IDs
-      let googleDriveId = '';
-      let googleDocId = '';
-
-      try {
-        if (documentType === 'folder') {
-          googleDriveId = await googleService.createFolder(title, safeParentFolderId);
-        } else {
-          const docInfo = await googleService.createDocument(title, safeParentFolderId);
-          googleDriveId = docInfo.driveId;
-          googleDocId = docInfo.docId;
-        }
-      } catch (googleError) {
-        console.error('Google API error:', googleError);
-        return res.status(500).json({ error: 'Failed to create document in Google Drive' });
-      }
-
-      // Get existing docs count for ordering
-      const siblingDocsCount = await Document.countDocuments({
-        project: projectId,
-        parent: parentId || null
-      });
-
-      // Create document in database
-      const document = await Document.create({
+      const { driveId, metadata } = await googleService.createDocument(
+        project.rootFolderId,
         title,
-        documentType,
-        parent: parentId || null,
-        project: projectId,
-        googleDocId,
-        googleDriveId,
-        synopsis,
-        order: siblingDocsCount,
-      });
+        parentFolderId,
+        documentType
+      );
 
-      return res.status(201).json(document);
+      // Optionally cache in MongoDB for search/performance
+      try {
+        await Document.create({
+          project: projectId,
+          googleDriveId: driveId,
+          title,
+          documentType,
+          parentGoogleId: parentId === 'root' ? undefined : parentId,
+          order: metadata.order,
+          lastSyncedAt: new Date(),
+        });
+        console.log(`💾 Cached document in MongoDB: ${title}`);
+      } catch (cacheError) {
+        console.warn('Failed to cache document in MongoDB (non-critical):', cacheError);
+      }
+
+      console.log(`✅ Created ${documentType} "${title}" with JSON metadata`);
+      return res.status(201).json(metadata);
     } catch (error) {
       console.error('Document creation error:', error);
       return res.status(500).json({ error: 'Failed to create document' });
@@ -132,42 +131,57 @@ router.get('/:id/content', function(req: Request, res: Response) {
       const { id } = req.params;
       const userId = req.headers['user-id'] as string;
 
+      if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
+      }
+
       if (!id) {
         return res.status(400).json({ error: 'Document ID is required' });
       }
 
-      const document = await Document.findById(id);
-      if (!document) {
-        return res.status(404).json({ error: 'Document not found' });
+      // Find project that contains this document
+      const cachedDoc = await Document.findOne({ googleDriveId: id });
+      let project: any = null;
+
+      if (cachedDoc) {
+        project = await Project.findById(cachedDoc.project);
+      } else {
+        // If not cached, search through user's projects
+        const userProjects = await Project.find({ owner: userId });
+        for (const proj of userProjects) {
+          const user = await User.findById(userId);
+          if (user?.accessToken && user?.refreshToken) {
+            try {
+              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+              const documents = await googleService.getDocuments(proj.rootFolderId);
+              if (documents.some(doc => doc.id === id)) {
+                project = proj;
+                break;
+              }
+            } catch (error) {
+              console.warn(`Failed to check project ${proj._id} for document ${id}`);
+            }
+          }
+        }
       }
 
-      if (!document.googleDocId) {
-        return res.status(400).json({ error: 'Document does not have a Google Doc ID' });
-      }
-
-      // Check project access
-      const project = await Project.findById(document.project);
       if (!project) {
-        return res.status(404).json({ error: 'Associated project not found' });
+        return res.status(404).json({ error: 'Document not found or access denied' });
       }
-      
+
       if (project.owner.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorized to access this document' });
       }
 
       const user = await User.findById(userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      if (!user.accessToken || !user.refreshToken) {
+      if (!user?.accessToken || !user?.refreshToken) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
 
       try {
-        const content = await googleService.getDocumentContent(document.googleDocId);
+        const content = await googleService.getDocumentContent(id);
         return res.json(content);
       } catch (googleError) {
         console.error('Google API error:', googleError);
@@ -182,41 +196,77 @@ router.get('/:id/content', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Update document metadata
+// Update document metadata - UPDATES JSON FILES
 router.patch('/:id', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
       const { id } = req.params;
       const userId = req.headers['user-id'] as string;
-      const { title, synopsis, metadata } = req.body;
+      const updates = req.body;
 
-      const document = await Document.findById(id);
-      if (!document) {
-        return res.status(404).json({ error: 'Document not found' });
+      if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
       }
 
-      // Check project access
-      const project = await Project.findById(document.project);
+      // Find project that contains this document
+      const cachedDoc = await Document.findOne({ googleDriveId: id });
+      let project: any = null;
+
+      if (cachedDoc) {
+        project = await Project.findById(cachedDoc.project);
+      } else {
+        // Search through user's projects
+        const userProjects = await Project.find({ owner: userId });
+        for (const proj of userProjects) {
+          const user = await User.findById(userId);
+          if (user?.accessToken && user?.refreshToken) {
+            try {
+              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+              const documents = await googleService.getDocuments(proj.rootFolderId);
+              if (documents.some(doc => doc.id === id)) {
+                project = proj;
+                break;
+              }
+            } catch (error) {
+              console.warn(`Failed to check project ${proj._id} for document ${id}`);
+            }
+          }
+        }
+      }
+
       if (!project) {
-        return res.status(404).json({ error: 'Associated project not found' });
+        return res.status(404).json({ error: 'Document not found or access denied' });
       }
-      
+
       if (project.owner.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorized to modify this document' });
       }
 
-      // Update document fields
-      if (title !== undefined) document.title = title;
-      if (synopsis !== undefined) document.synopsis = synopsis;
-      if (metadata !== undefined) {
-        document.metadata = {
-          ...document.metadata,
-          ...metadata
-        };
+      const user = await User.findById(userId);
+      if (!user?.accessToken || !user?.refreshToken) {
+        return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      await document.save();
-      return res.json(document);
+      // Update document metadata in Google Drive JSON files
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+      const updatedMetadata = await googleService.updateDocument(project.rootFolderId, id, updates);
+
+      // Update cached version if it exists
+      if (cachedDoc) {
+        try {
+          if (updates.title) cachedDoc.title = updates.title;
+          if (updates.documentType) cachedDoc.documentType = updates.documentType;
+          if (cachedDoc.lastSyncedAt !== undefined) {
+            cachedDoc.lastSyncedAt = new Date();
+          }
+          await cachedDoc.save();
+        } catch (cacheError) {
+          console.warn('Failed to update cached document (non-critical):', cacheError);
+        }
+      }
+
+      console.log(`✅ Updated document metadata: ${id}`);
+      return res.json(updatedMetadata);
     } catch (error) {
       console.error('Update document error:', error);
       return res.status(500).json({ error: 'Failed to update document' });
@@ -226,26 +276,67 @@ router.patch('/:id', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Check if document can be deleted (for folders, check if empty)
+// Check if document can be deleted - READS FROM JSON FILES
 router.get('/:id/can-delete', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
       const { id } = req.params;
       const userId = req.headers['user-id'] as string;
 
-      const document = await Document.findById(id);
-      if (!document) {
-        return res.status(404).json({ error: 'Document not found' });
+      if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
       }
 
-      // Check project access
-      const project = await Project.findById(document.project);
-      if (!project) {
-        return res.status(404).json({ error: 'Associated project not found' });
+      // Find project that contains this document
+      const cachedDoc = await Document.findOne({ googleDriveId: id });
+      let project: any = null;
+      let documents: any[] = [];
+
+      if (cachedDoc) {
+        project = await Project.findById(cachedDoc.project);
+      } else {
+        // Search through user's projects
+        const userProjects = await Project.find({ owner: userId });
+        for (const proj of userProjects) {
+          const user = await User.findById(userId);
+          if (user?.accessToken && user?.refreshToken) {
+            try {
+              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+              const projDocuments = await googleService.getDocuments(proj.rootFolderId);
+              if (projDocuments.some(doc => doc.id === id)) {
+                project = proj;
+                documents = projDocuments;
+                break;
+              }
+            } catch (error) {
+              console.warn(`Failed to check project ${proj._id} for document ${id}`);
+            }
+          }
+        }
       }
-      
+
+      if (!project) {
+        return res.status(404).json({ error: 'Document not found or access denied' });
+      }
+
       if (project.owner.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorized to access this document' });
+      }
+
+      // Get documents if we don't have them yet
+      if (documents.length === 0) {
+        const user = await User.findById(userId);
+        if (!user?.accessToken || !user?.refreshToken) {
+          return res.status(400).json({ error: 'Missing authentication tokens' });
+        }
+        const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+        documents = await googleService.getDocuments(project.rootFolderId);
+      }
+
+      // Find the target document
+      const targetDoc = documents.find(doc => doc.id === id);
+      if (!targetDoc) {
+        return res.status(404).json({ error: 'Document not found' });
       }
 
       // If it's a folder, check if it has children
@@ -253,8 +344,8 @@ router.get('/:id/can-delete', function(req: Request, res: Response) {
       let childCount = 0;
       let children: any[] = [];
 
-      if (document.documentType === 'folder') {
-        children = await Document.find({ parent: id }).select('title documentType');
+      if (targetDoc.documentType === 'folder') {
+        children = documents.filter(doc => doc.parentId === id);
         childCount = children.length;
         canDelete = childCount === 0;
       }
@@ -263,14 +354,14 @@ router.get('/:id/can-delete', function(req: Request, res: Response) {
         canDelete,
         childCount,
         children: children.map(child => ({
-          id: child._id,
+          id: child.id,
           title: child.title,
           type: child.documentType
         })),
         document: {
-          id: document._id,
-          title: document.title,
-          type: document.documentType
+          id: targetDoc.id,
+          title: targetDoc.title,
+          type: targetDoc.documentType
         }
       });
     } catch (error) {
@@ -282,58 +373,95 @@ router.get('/:id/can-delete', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Delete document
+// Delete document - UPDATES JSON FILES
 router.delete('/:id', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
       const { id } = req.params;
       const userId = req.headers['user-id'] as string;
-      const { force } = req.query; // Add force parameter for deleting non-empty folders
+      const { force } = req.query;
 
-      const document = await Document.findById(id);
-      if (!document) {
-        return res.status(404).json({ error: 'Document not found' });
+      if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
       }
 
-      // Check project access
-      const project = await Project.findById(document.project);
+      // Find project that contains this document
+      const cachedDoc = await Document.findOne({ googleDriveId: id });
+      let project: any = null;
+      let documents: any[] = [];
+
+      if (cachedDoc) {
+        project = await Project.findById(cachedDoc.project);
+      } else {
+        // Search through user's projects
+        const userProjects = await Project.find({ owner: userId });
+        for (const proj of userProjects) {
+          const user = await User.findById(userId);
+          if (user?.accessToken && user?.refreshToken) {
+            try {
+              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+              const projDocuments = await googleService.getDocuments(proj.rootFolderId);
+              if (projDocuments.some(doc => doc.id === id)) {
+                project = proj;
+                documents = projDocuments;
+                break;
+              }
+            } catch (error) {
+              console.warn(`Failed to check project ${proj._id} for document ${id}`);
+            }
+          }
+        }
+      }
+
       if (!project) {
-        return res.status(404).json({ error: 'Associated project not found' });
+        return res.status(404).json({ error: 'Document not found or access denied' });
       }
-      
+
       if (project.owner.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorized to delete this document' });
       }
 
-      // Get user for Google Drive operations
+      // Get documents and user if we don't have them yet
       const user = await User.findById(userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
+      if (!user?.accessToken || !user?.refreshToken) {
+        return res.status(400).json({ error: 'Missing authentication tokens' });
+      }
+
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+      
+      if (documents.length === 0) {
+        documents = await googleService.getDocuments(project.rootFolderId);
+      }
+
+      // Find the target document
+      const targetDoc = documents.find(doc => doc.id === id);
+      if (!targetDoc) {
+        return res.status(404).json({ error: 'Document not found' });
       }
 
       // If it's a folder and force is not specified, check if it has children
-      if (document.documentType === 'folder' && force !== 'true') {
-        const childCount = await Document.countDocuments({ parent: id });
-        if (childCount > 0) {
+      if (targetDoc.documentType === 'folder' && force !== 'true') {
+        const children = documents.filter(doc => doc.parentId === id);
+        if (children.length > 0) {
           return res.status(400).json({ 
             error: 'Cannot delete non-empty folder',
             code: 'FOLDER_NOT_EMPTY',
-            childCount 
+            childCount: children.length
           });
         }
       }
 
-      // Get all descendants if force deleting a folder
-      let documentsToDelete = [document];
-      if (document.documentType === 'folder' && force === 'true') {
+      // Get all documents to delete (including descendants if force deleting folder)
+      let documentsToDelete = [targetDoc];
+      if (targetDoc.documentType === 'folder' && force === 'true') {
         // Recursively get all descendants
-        const getAllDescendants = async (parentId: string): Promise<any[]> => {
-          const children = await Document.find({ parent: parentId });
+        const getAllDescendants = (parentId: string): any[] => {
+          const children = documents.filter(doc => doc.parentId === parentId);
           let descendants = [...children];
           
           for (const child of children) {
             if (child.documentType === 'folder') {
-              const childDescendants = await getAllDescendants(child._id.toString());
+              const childDescendants = getAllDescendants(child.id);
               descendants = descendants.concat(childDescendants);
             }
           }
@@ -341,35 +469,27 @@ router.delete('/:id', function(req: Request, res: Response) {
           return descendants;
         };
         
-        const descendants = await getAllDescendants(id);
-        documentsToDelete = [document, ...descendants];
+        const descendants = getAllDescendants(id);
+        documentsToDelete = [targetDoc, ...descendants];
       }
 
-      // Delete from Google Drive if needed
-      if (user.accessToken && user.refreshToken) {
+      // Delete from Google Drive and update JSON index
+      for (const doc of documentsToDelete) {
         try {
-          const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
-          
-          for (const doc of documentsToDelete) {
-            if (doc.googleDriveId) {
-              try {
-                await googleService.deleteFile(doc.googleDriveId);
-                console.log(`🗑️ Deleted Google Drive file: ${doc.googleDriveId}`);
-              } catch (googleError) {
-                console.error(`Failed to delete from Google Drive: ${doc.googleDriveId}`, googleError);
-                // Continue with local deletion even if Google Drive deletion fails
-              }
-            }
-          }
+          await googleService.deleteDocument(project.rootFolderId, doc.id);
+          console.log(`🗑️ Deleted document: ${doc.title} (${doc.id})`);
         } catch (googleError) {
-          console.error('Failed to initialize Google Service:', googleError);
-          // Continue with local deletion even if Google Drive deletion fails
+          console.error(`Failed to delete document ${doc.id}:`, googleError);
+          // Continue with other deletions
         }
       }
 
-      // Delete all documents from database (in reverse order to handle dependencies)
-      const docIds = documentsToDelete.map(doc => doc._id);
-      await Document.deleteMany({ _id: { $in: docIds } });
+      // Delete cached versions from MongoDB
+      const deletedCacheCount = await Document.deleteMany({ 
+        googleDriveId: { $in: documentsToDelete.map(doc => doc.id) }
+      });
+
+      console.log(`🗑️ Deleted ${deletedCacheCount.deletedCount} cached documents from MongoDB`);
 
       return res.json({ 
         success: true, 
@@ -379,6 +499,193 @@ router.delete('/:id', function(req: Request, res: Response) {
     } catch (error) {
       console.error('Delete document error:', error);
       return res.status(500).json({ error: 'Failed to delete document' });
+    }
+  };
+  
+  handleRequest();
+});
+
+// Move document - NEW ENDPOINT FOR REORDERING/REPARENTING
+router.patch('/:id/move', function(req: Request, res: Response) {
+  const handleRequest = async () => {
+    try {
+      const { id } = req.params;
+      const userId = req.headers['user-id'] as string;
+      const { newParentId, newOrder } = req.body;
+
+      if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
+      }
+
+      // Find project that contains this document
+      const cachedDoc = await Document.findOne({ googleDriveId: id });
+      let project: any = null;
+
+      if (cachedDoc) {
+        project = await Project.findById(cachedDoc.project);
+      } else {
+        // Search through user's projects
+        const userProjects = await Project.find({ owner: userId });
+        for (const proj of userProjects) {
+          const user = await User.findById(userId);
+          if (user?.accessToken && user?.refreshToken) {
+            try {
+              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+              const documents = await googleService.getDocuments(proj.rootFolderId);
+              if (documents.some(doc => doc.id === id)) {
+                project = proj;
+                break;
+              }
+            } catch (error) {
+              console.warn(`Failed to check project ${proj._id} for document ${id}`);
+            }
+          }
+        }
+      }
+
+      if (!project) {
+        return res.status(404).json({ error: 'Document not found or access denied' });
+      }
+
+      if (project.owner.toString() !== userId) {
+        return res.status(403).json({ error: 'Not authorized to modify this document' });
+      }
+
+      const user = await User.findById(userId);
+      if (!user?.accessToken || !user?.refreshToken) {
+        return res.status(400).json({ error: 'Missing authentication tokens' });
+      }
+
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+
+      // Update document metadata with new parent/order
+      const updates: any = {};
+      if (newParentId !== undefined) updates.parentId = newParentId;
+      if (newOrder !== undefined) updates.order = newOrder;
+
+      const updatedMetadata = await googleService.updateDocument(project.rootFolderId, id, updates);
+
+      // Update cached version if it exists
+      if (cachedDoc) {
+        try {
+          if (newParentId !== undefined && cachedDoc.parentGoogleId !== undefined) {
+            cachedDoc.parentGoogleId = newParentId;
+          }
+          if (newOrder !== undefined) cachedDoc.order = newOrder;
+          if (cachedDoc.lastSyncedAt !== undefined) {
+            cachedDoc.lastSyncedAt = new Date();
+          }
+          await cachedDoc.save();
+        } catch (cacheError) {
+          console.warn('Failed to update cached document (non-critical):', cacheError);
+        }
+      }
+
+      console.log(`✅ Moved document: ${id}`);
+      return res.json(updatedMetadata);
+    } catch (error) {
+      console.error('Move document error:', error);
+      return res.status(500).json({ error: 'Failed to move document' });
+    }
+  };
+  
+  handleRequest();
+});
+
+// Get document statistics - NEW ENDPOINT
+router.get('/:id/stats', function(req: Request, res: Response) {
+  const handleRequest = async () => {
+    try {
+      const { id } = req.params;
+      const userId = req.headers['user-id'] as string;
+
+      if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
+      }
+
+      // Find project and get document from JSON files
+      const userProjects = await Project.find({ owner: userId });
+      let targetDoc: any = null;
+      let project: any = null;
+
+      for (const proj of userProjects) {
+        const user = await User.findById(userId);
+        if (user?.accessToken && user?.refreshToken) {
+          try {
+            const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+            const documents = await googleService.getDocuments(proj.rootFolderId);
+            const foundDoc = documents.find(doc => doc.id === id);
+            if (foundDoc) {
+              targetDoc = foundDoc;
+              project = proj;
+              break;
+            }
+          } catch (error) {
+            console.warn(`Failed to check project ${proj._id} for document ${id}`);
+          }
+        }
+      }
+
+      if (!targetDoc || !project) {
+        return res.status(404).json({ error: 'Document not found or access denied' });
+      }
+
+      // Get document content for word count if it's a Google Doc
+      let wordCount = targetDoc.wordCount || 0;
+      let lastModified = targetDoc.updatedAt;
+
+      if (targetDoc.documentType !== 'folder') {
+        try {
+          const user = await User.findById(userId);
+          if (user?.accessToken && user?.refreshToken) {
+            const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+            const content = await googleService.getDocumentContent(id);
+            
+            // Simple word count from Google Docs content
+            if (content.body && content.body.content) {
+              let text = '';
+              const extractText = (elements: any[]) => {
+                for (const element of elements) {
+                  if (element.paragraph && element.paragraph.elements) {
+                    for (const textElement of element.paragraph.elements) {
+                      if (textElement.textRun && textElement.textRun.content) {
+                        text += textElement.textRun.content;
+                      }
+                    }
+                  }
+                }
+              };
+              extractText(content.body.content);
+              wordCount = text.trim().split(/\s+/).filter(word => word.length > 0).length;
+            }
+            
+            lastModified = content.revisionId ? new Date().toISOString() : lastModified;
+          }
+        } catch (error) {
+          console.warn('Failed to get document content for stats:', error);
+        }
+      }
+
+      const stats = {
+        id: targetDoc.id,
+        title: targetDoc.title,
+        documentType: targetDoc.documentType,
+        wordCount,
+        wordCountGoal: targetDoc.wordCountGoal || null,
+        status: targetDoc.status || 'draft',
+        includeInCompile: targetDoc.includeInCompile || false,
+        tags: targetDoc.tags || [],
+        createdAt: targetDoc.createdAt,
+        updatedAt: targetDoc.updatedAt,
+        lastModified,
+        projectId: project._id,
+        projectName: project.name
+      };
+
+      res.json(stats);
+    } catch (error) {
+      console.error('Failed to get document statistics:', error);
+      res.status(500).json({ error: 'Failed to get document statistics' });
     }
   };
   

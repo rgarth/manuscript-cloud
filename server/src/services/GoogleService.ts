@@ -57,7 +57,12 @@ export default class GoogleService {
   private PROJECT_METADATA_FILE = '.manuscript-project.json';
   private DOCUMENT_INDEX_FILE = '.document-index.json';
 
-  constructor(accessToken: string, refreshToken: string, userId: string, userEmail: string = '') {
+  constructor(
+    accessToken: string | undefined,
+    refreshToken: string | undefined,
+    userId: string,
+    userEmail: string = ''
+  ) {
     this.userId = userId;
     this.userEmail = userEmail;
     
@@ -303,6 +308,16 @@ export default class GoogleService {
     }
   }
 
+ async deleteFile(fileId: string): Promise<void> {
+    try {
+      await this.drive.files.delete({ fileId });
+      console.log(`🗑️ Deleted Google Drive file: ${fileId}`);
+    } catch (error) {
+      console.error(`❌ Failed to delete Google Drive file ${fileId}:`, error);
+      throw error;
+    }
+  }
+
   // ===========================================
   // JSON FILE OPERATIONS
   // ===========================================
@@ -488,6 +503,38 @@ export default class GoogleService {
     } catch (error) {
       console.error('❌ Google Drive API connection failed:', error);
       return false;
+    }
+  }
+
+  async deleteFile(fileId: string): Promise<void> {
+  try {
+    await this.drive.files.delete({ fileId });
+    console.log(`🗑️ Deleted Google Drive file: ${fileId}`);
+  } catch (error) {
+    console.error(`❌ Failed to delete Google Drive file ${fileId}:`, error);
+    throw error;
+  }
+}
+
+  async createProjectFolder(name: string): Promise<{
+    rootId: string;
+    chaptersId: string;
+    charactersId: string;
+    researchId: string;
+  }> {
+    try {
+      // Use the existing createProject method
+      const { folderId, metadata } = await this.createProject(name, '');
+      
+      return {
+        rootId: folderId,
+        chaptersId: metadata.structure?.chaptersId || '',
+        charactersId: metadata.structure?.charactersId || '',
+        researchId: metadata.structure?.researchId || '',
+      };
+    } catch (error) {
+      console.error('❌ Failed to create project folder structure:', error);
+      throw error;
     }
   }
 }

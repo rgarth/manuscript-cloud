@@ -9,7 +9,9 @@ interface IDocument extends mongoose.Document {
   googleDocId?: string;
   googleDriveId?: string;
   synopsis?: string;
+  parentGoogleId?: string; 
   order: number;
+  lastSyncedAt?: Date;
   metadata: {
     status?: 'draft' | 'review' | 'final' | 'published';
     tags?: string[];
@@ -54,10 +56,12 @@ const DocumentSchema = new mongoose.Schema({
   googleDocId: String,
   googleDriveId: String,
   synopsis: String,
+  parentGoogleId: String, 
   order: {
     type: Number,
     default: 0,
   },
+  lastSyncedAt: Date,
   metadata: {
     status: {
       type: String,
