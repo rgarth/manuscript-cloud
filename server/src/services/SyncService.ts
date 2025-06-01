@@ -1,4 +1,4 @@
-// server/src/services/SyncService.ts
+// server/src/services/SyncService.ts - UPDATED FOR JSON FILE ARCHITECTURE
 import Document from '../models/Document.js';
 import Project from '../models/Project.js';
 import GoogleService from './GoogleService.js';
@@ -12,185 +12,208 @@ export class SyncService {
     this.projectId = projectId;
   }
 
-  // Full sync: rebuild database from Google Drive state
+  // Simplified sync: just refresh from JSON files in Google Drive
+  async syncProject(): Promise<void> {
+    try {
+      console.log(`🔄 Starting sync for project: ${this.projectId}`);
+      
+      const project = await Project.findById(this.projectId);
+      if (!project) {
+        throw new Error('Project not found');
+      }
+
+      if (!project.rootFolderId) {
+        throw new Error('Project missing rootFolderId - cannot sync');
+      }
+
+      // Get fresh data from Google Drive JSON files
+      const projectMetadata = await this.googleService.getProject(project.rootFolderId);
+      const documents = await this.googleService.getDocuments(project.rootFolderId);
+      
+      console.log(`📊 Found ${documents.length} documents in JSON index`);
+
+      // Update local database if needed (optional - for caching/performance)
+      await this.updateLocalDatabase(project, projectMetadata, documents);
+
+      // Update project sync status
+      project.lastSyncTime = new Date();
+      project.syncStatus = 'synced';
+      project.syncError = undefined;
+      await project.save();
+
+      console.log(`✅ Sync completed for project: ${this.projectId}`);
+    } catch (error) {
+      console.error('❌ Sync failed:', error);
+      
+      // Update project sync status to error
+      const project = await Project.findById(this.projectId);
+      if (project) {
+        project.syncStatus = 'error';
+        project.syncError = error instanceof Error ? error.message : 'Unknown sync error';
+        await project.save();
+      }
+      
+      throw error;
+    }
+  }
+
+  // Full sync is the same as regular sync since we always read from source of truth (JSON files)
   async fullSync(): Promise<void> {
-    try {
-      console.log(`🔄 Starting full sync for project: ${this.projectId}`);
-      
-      const project = await Project.findById(this.projectId);
-      if (!project) {
-        throw new Error('Project not found');
-      }
-
-      if (!project.rootFolderId) {
-        throw new Error('Project missing rootFolderId - cannot sync');
-      }
-
-      // Get all files from Google Drive
-      const driveFiles = await this.googleService.syncProjectFiles(project.rootFolderId);
-      
-      // Get current database state
-      const dbDocs = await Document.find({ project: this.projectId });
-      
-      // Create maps for easy lookup
-      const driveFileMap = new Map(driveFiles.map(f => [f.id, f]));
-      const dbDocMap = new Map(dbDocs.map(d => [d.googleDriveId, d]));
-
-      // Process each drive file
-      for (const driveFile of driveFiles) {
-        const dbDoc = dbDocMap.get(driveFile.id);
-        
-        if (dbDoc) {
-          // Update existing document
-          await this.updateDocumentFromDrive(dbDoc, driveFile);
-        } else {
-          // Create new document
-          await this.createDocumentFromDrive(driveFile);
-        }
-      }
-
-      // Remove documents that no longer exist in Drive
-      for (const dbDoc of dbDocs) {
-        if (dbDoc.googleDriveId && !driveFileMap.has(dbDoc.googleDriveId)) {
-          console.log(`🗑️ Removing deleted document: ${dbDoc.title}`);
-          await Document.findByIdAndDelete(dbDoc._id);
-        }
-      }
-
-      // Update project last sync time
-      project.lastSyncTime = new Date();
-      await project.save();
-
-      console.log(`✅ Full sync completed for project: ${this.projectId}`);
-    } catch (error) {
-      console.error('❌ Full sync failed:', error);
-      throw error;
-    }
+    return this.syncProject();
   }
 
-  // Incremental sync: only sync changed files
+  // Incremental sync is also the same - JSON files are always current
   async incrementalSync(): Promise<void> {
+    return this.syncProject();
+  }
+
+  // Optional: Update local database for caching (you may not need this)
+  private async updateLocalDatabase(
+    project: any, 
+    projectMetadata: any, 
+    documents: any[]
+  ): Promise<void> {
     try {
-      const project = await Project.findById(this.projectId);
-      if (!project) {
-        throw new Error('Project not found');
+      // Update project metadata in local database (optional)
+      if (projectMetadata.description !== project.description) {
+        project.description = projectMetadata.description;
+        console.log(`📝 Updated project description`);
       }
 
-      if (!project.rootFolderId) {
-        throw new Error('Project missing rootFolderId - cannot sync');
-      }
+      // Sync documents to local database (optional - for search/performance)
+      const localDocs = await Document.find({ project: this.projectId });
+      const localDocMap = new Map(localDocs.map(doc => [doc.googleDriveId, doc]));
 
-      const lastSyncTime = project.lastSyncTime || new Date(0);
-      const changedFiles = await this.googleService.getChangedFiles(
-        project.rootFolderId, 
-        lastSyncTime
-      );
-
-      console.log(`🔄 Syncing ${changedFiles.length} changed files`);
-
-      for (const driveFile of changedFiles) {
-        if (driveFile.trashed) {
-          // Handle deleted files
-          await this.handleDeletedFile(driveFile.id);
-        } else {
-          // Handle updated/new files
-          const dbDoc = await Document.findOne({ googleDriveId: driveFile.id });
-          
-          if (dbDoc) {
-            await this.updateDocumentFromDrive(dbDoc, driveFile);
-          } else {
-            await this.createDocumentFromDrive(driveFile);
+      for (const driveDoc of documents) {
+        const localDoc = localDocMap.get(driveDoc.id);
+        
+        if (localDoc) {
+          // Update existing document
+          if (localDoc.title !== driveDoc.title || 
+              localDoc.documentType !== driveDoc.documentType) {
+            localDoc.title = driveDoc.title;
+            localDoc.documentType = driveDoc.documentType;
+            localDoc.order = driveDoc.order;
+            localDoc.synopsis = driveDoc.synopsis;
+            await localDoc.save();
+            console.log(`📝 Updated local document: ${driveDoc.title}`);
           }
+        } else {
+          // Create new local document
+          await Document.create({
+            title: driveDoc.title,
+            documentType: driveDoc.documentType,
+            project: this.projectId,
+            googleDocId: driveDoc.id,
+            googleDriveId: driveDoc.id,
+            order: driveDoc.order,
+            synopsis: driveDoc.synopsis,
+            metadata: {
+              includeInCompile: driveDoc.includeInCompile,
+              status: driveDoc.status,
+              tags: driveDoc.tags,
+            },
+          });
+          console.log(`📄 Created local document: ${driveDoc.title}`);
         }
       }
 
-      // Update last sync time
-      project.lastSyncTime = new Date();
-      await project.save();
+      // Remove local documents that no longer exist in Drive
+      const driveDocIds = new Set(documents.map(doc => doc.id));
+      for (const localDoc of localDocs) {
+        if (localDoc.googleDriveId && !driveDocIds.has(localDoc.googleDriveId)) {
+          await Document.findByIdAndDelete(localDoc._id);
+          console.log(`🗑️ Removed local document: ${localDoc.title}`);
+        }
+      }
 
-      console.log(`✅ Incremental sync completed`);
     } catch (error) {
-      console.error('❌ Incremental sync failed:', error);
+      console.warn('⚠️ Failed to update local database (non-critical):', error);
+      // Don't throw - this is optional caching
+    }
+  }
+
+  // Validate that JSON files exist and are readable
+  async validateProjectStructure(): Promise<{
+    hasProjectMetadata: boolean;
+    hasDocumentIndex: boolean;
+    errors: string[];
+  }> {
+    const result = {
+      hasProjectMetadata: false,
+      hasDocumentIndex: false,
+      errors: [] as string[]
+    };
+
+    try {
+      const project = await Project.findById(this.projectId);
+      if (!project?.rootFolderId) {
+        result.errors.push('Project missing rootFolderId');
+        return result;
+      }
+
+      // Check project metadata file
+      try {
+        await this.googleService.getProject(project.rootFolderId);
+        result.hasProjectMetadata = true;
+      } catch (error) {
+        result.errors.push(`Project metadata file issue: ${error}`);
+      }
+
+      // Check document index file
+      try {
+        await this.googleService.getDocuments(project.rootFolderId);
+        result.hasDocumentIndex = true;
+      } catch (error) {
+        result.errors.push(`Document index file issue: ${error}`);
+      }
+
+    } catch (error) {
+      result.errors.push(`Validation failed: ${error}`);
+    }
+
+    return result;
+  }
+
+  // Repair missing JSON files
+  async repairProjectStructure(): Promise<void> {
+    try {
+      const project = await Project.findById(this.projectId);
+      if (!project?.rootFolderId) {
+        throw new Error('Project missing rootFolderId');
+      }
+
+      const validation = await this.validateProjectStructure();
+
+      if (!validation.hasProjectMetadata) {
+        console.log('🔧 Repairing missing project metadata file...');
+        await this.googleService.createProject(project.name, project.description || '');
+      }
+
+      if (!validation.hasDocumentIndex) {
+        console.log('🔧 Repairing missing document index file...');
+        // Create empty document index
+        const emptyIndex: any[] = [];
+        // This would need a method to save document index directly
+        // For now, creating a document and removing it will create the index
+        const tempDoc = await this.googleService.createDocument(
+          project.rootFolderId,
+          'temp-repair-doc',
+          project.rootFolderId,
+          'scene'
+        );
+        await this.googleService.deleteDocument(project.rootFolderId, tempDoc.driveId);
+      }
+
+      console.log('✅ Project structure repaired');
+    } catch (error) {
+      console.error('❌ Failed to repair project structure:', error);
       throw error;
     }
-  }
-
-  private async createDocumentFromDrive(driveFile: any): Promise<void> {
-    try {
-      const properties = driveFile.properties || {};
-      
-      // Extract metadata from Drive properties
-      const documentType = properties['document-type'] || 'scene';
-      const order = parseInt(properties['order'] || '0');
-      
-      // Determine parent from Drive folder structure
-      const parentId = await this.findParentDocumentId(driveFile.parents?.[0]);
-
-      const document = await Document.create({
-        title: driveFile.name,
-        documentType,
-        parent: parentId,
-        project: this.projectId,
-        googleDocId: driveFile.id,
-        googleDriveId: driveFile.id,
-        order,
-        metadata: {
-          includeInCompile: documentType === 'scene',
-        },
-      });
-
-      console.log(`📄 Created document from Drive: ${driveFile.name}`);
-    } catch (error) {
-      console.error(`❌ Failed to create document from Drive file: ${driveFile.name}`, error);
-    }
-  }
-
-  private async updateDocumentFromDrive(dbDoc: any, driveFile: any): Promise<void> {
-    try {
-      const properties = driveFile.properties || {};
-      
-      // Update fields that might have changed
-      dbDoc.title = driveFile.name;
-      dbDoc.order = parseInt(properties['order'] || dbDoc.order.toString());
-      
-      // Check if parent changed (file moved)
-      const newParentId = await this.findParentDocumentId(driveFile.parents?.[0]);
-      if (newParentId !== dbDoc.parent?.toString()) {
-        dbDoc.parent = newParentId;
-        console.log(`📁 Document moved: ${driveFile.name}`);
-      }
-
-      await dbDoc.save();
-    } catch (error) {
-      console.error(`❌ Failed to update document: ${driveFile.name}`, error);
-    }
-  }
-
-  private async handleDeletedFile(driveFileId: string): Promise<void> {
-    try {
-      const dbDoc = await Document.findOne({ googleDriveId: driveFileId });
-      if (dbDoc) {
-        await Document.findByIdAndDelete(dbDoc._id);
-        console.log(`🗑️ Removed deleted document: ${dbDoc.title}`);
-      }
-    } catch (error) {
-      console.error('❌ Failed to handle deleted file:', error);
-    }
-  }
-
-  private async findParentDocumentId(driveFolderId?: string): Promise<string | null> {
-    if (!driveFolderId) return null;
-    
-    const parentDoc = await Document.findOne({ 
-      googleDriveId: driveFolderId,
-      project: this.projectId 
-    });
-    
-    return parentDoc?._id?.toString() || null;
   }
 }
 
-// Utility to trigger sync for a project
+// Utility to trigger sync for a project with JSON file architecture
 export async function syncProject(projectId: string, userId: string, fullSync = false): Promise<void> {
   try {
     const User = (await import('../models/User.js')).default;
@@ -200,16 +223,70 @@ export async function syncProject(projectId: string, userId: string, fullSync = 
       throw new Error('User authentication tokens not found');
     }
 
-    const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
+    const googleService = new GoogleService(
+      user.accessToken, 
+      user.refreshToken, 
+      userId, 
+      user.email
+    );
     const syncService = new SyncService(googleService, projectId);
 
-    if (fullSync) {
-      await syncService.fullSync();
-    } else {
-      await syncService.incrementalSync();
-    }
+    // With JSON files, full sync and incremental sync are the same
+    await syncService.syncProject();
+    
+    console.log(`✅ Project ${projectId} synced successfully`);
   } catch (error) {
     console.error('❌ Project sync failed:', error);
+    throw error;
+  }
+}
+
+// Utility to validate project structure
+export async function validateProject(projectId: string, userId: string): Promise<any> {
+  try {
+    const User = (await import('../models/User.js')).default;
+    const user = await User.findById(userId);
+    
+    if (!user?.accessToken || !user?.refreshToken) {
+      throw new Error('User authentication tokens not found');
+    }
+
+    const googleService = new GoogleService(
+      user.accessToken, 
+      user.refreshToken, 
+      userId, 
+      user.email
+    );
+    const syncService = new SyncService(googleService, projectId);
+
+    return await syncService.validateProjectStructure();
+  } catch (error) {
+    console.error('❌ Project validation failed:', error);
+    throw error;
+  }
+}
+
+// Utility to repair project structure
+export async function repairProject(projectId: string, userId: string): Promise<void> {
+  try {
+    const User = (await import('../models/User.js')).default;
+    const user = await User.findById(userId);
+    
+    if (!user?.accessToken || !user?.refreshToken) {
+      throw new Error('User authentication tokens not found');
+    }
+
+    const googleService = new GoogleService(
+      user.accessToken, 
+      user.refreshToken, 
+      userId, 
+      user.email
+    );
+    const syncService = new SyncService(googleService, projectId);
+
+    await syncService.repairProjectStructure();
+  } catch (error) {
+    console.error('❌ Project repair failed:', error);
     throw error;
   }
 }

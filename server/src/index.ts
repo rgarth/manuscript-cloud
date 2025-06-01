@@ -1,3 +1,4 @@
+// server/src/index.ts - UPDATE YOUR EXISTING FILE
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -7,6 +8,7 @@ import mongoose from 'mongoose';
 import authRoutes from './routes/auth.js';
 import projectRoutes from './routes/projects.js';
 import documentRoutes from './routes/documents.js';
+import testMetadataRoutes from './routes/test-metadata.js'; // ADD THIS LINE
 
 dotenv.config();
 
@@ -18,6 +20,7 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/documents', documentRoutes);
+app.use('/api/test', testMetadataRoutes); // ADD THIS LINE
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -28,6 +31,12 @@ app.get('/api/health', (req, res) => {
 const PORT = process.env.PORT || 5050;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`🧪 Test metadata endpoints available at:`);
+  console.log(`   POST /api/test/create-project`);
+  console.log(`   GET  /api/test/project/:folderId`);
+  console.log(`   POST /api/test/project/:folderId/document`);
+  console.log(`   GET  /api/test/document/:docId`);
+  console.log(`   GET  /api/test/project/:folderId/structure`);
 });
 
 // Connect to MongoDB
