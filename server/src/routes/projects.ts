@@ -7,19 +7,6 @@ import GoogleService from '../services/GoogleService.js';
 
 const router = express.Router();
 
-// Helper function to safely create GoogleService
-function createGoogleService(user: any, userId: string): GoogleService {
-  if (!user.accessToken || !user.refreshToken) {
-    throw new Error('Missing authentication tokens');
-  }
-  
-  const accessToken: string = user.accessToken;
-  const refreshToken: string = user.refreshToken;
-  const userEmail: string = user.email || '';
-  
-  return new GoogleService(accessToken, refreshToken, userId, userEmail);
-}
-
 // Get all projects for a user
 router.get('/', function(req: Request, res: Response) {
   const handleRequest = async () => {
@@ -30,16 +17,15 @@ router.get('/', function(req: Request, res: Response) {
         return res.status(401).json({ error: 'User ID required' });
       }
       
-      // Get projects from MongoDB (minimal data)
-      const projects = await Project.find({ owner: userId }).select('name rootFolderId createdAt updatedAt syncStatus lastSyncTime');
+      // Get basic project info from MongoDB
+      const projects = await Project.find({ owner: userId });
       
-      // Optionally enrich with metadata from Google Drive JSON files
+      // Enrich with metadata from Google Drive JSON files
       const user = await User.findById(userId);
       if (user?.accessToken && user?.refreshToken) {
         try {
-          const googleService = createGoogleService(user, userId);
+          const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
           
-          // Enrich each project with Google Drive metadata
           const enrichedProjects = await Promise.all(
             projects.map(async (project) => {
               try {
@@ -51,8 +37,6 @@ router.get('/', function(req: Request, res: Response) {
                   rootFolderId: project.rootFolderId,
                   createdAt: project.createdAt,
                   updatedAt: project.updatedAt,
-                  syncStatus: project.syncStatus,
-                  lastSyncTime: project.lastSyncTime,
                   metadata: {
                     version: metadata.version,
                     statistics: metadata.statistics,
@@ -68,8 +52,7 @@ router.get('/', function(req: Request, res: Response) {
                   rootFolderId: project.rootFolderId,
                   createdAt: project.createdAt,
                   updatedAt: project.updatedAt,
-                  syncStatus: 'error',
-                  syncError: 'Failed to load project metadata'
+                  error: 'Failed to load project metadata'
                 };
               }
             })
@@ -81,6 +64,7 @@ router.get('/', function(req: Request, res: Response) {
         }
       }
       
+      // Fallback to basic project info
       res.json(projects);
     } catch (error) {
       console.error('Failed to fetch projects:', error);
@@ -114,16 +98,15 @@ router.post('/', function(req: Request, res: Response) {
       if (!user.accessToken || !user.refreshToken) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
-
-      const googleService = createGoogleService(user, userId);
+      
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
       const { folderId, metadata } = await googleService.createProject(name.trim(), description?.trim() || '');
       
+      // Store minimal info in MongoDB
       const project = await Project.create({
         name: name.trim(),
         owner: userId,
         rootFolderId: folderId,
-        syncStatus: 'synced',
-        lastSyncTime: new Date(),
       });
       
       console.log(`✅ Created project "${name}" with JSON metadata`);
@@ -135,8 +118,6 @@ router.post('/', function(req: Request, res: Response) {
         rootFolderId: project.rootFolderId,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
-        syncStatus: project.syncStatus,
-        lastSyncTime: project.lastSyncTime,
         metadata: {
           version: metadata.version,
           statistics: metadata.statistics,
@@ -179,7 +160,7 @@ router.get('/:id', function(req: Request, res: Response) {
       }
       
       try {
-        const googleService = createGoogleService(user, userId);
+        const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
         const metadata = await googleService.getProject(project.rootFolderId);
         
         res.json({
@@ -189,16 +170,10 @@ router.get('/:id', function(req: Request, res: Response) {
           rootFolderId: project.rootFolderId,
           createdAt: project.createdAt,
           updatedAt: project.updatedAt,
-          syncStatus: project.syncStatus,
-          lastSyncTime: project.lastSyncTime,
           metadata: metadata
         });
       } catch (error) {
         console.error('Failed to load project metadata:', error);
-        
-        project.syncStatus = 'error';
-        project.syncError = 'Failed to load project metadata from Google Drive';
-        await project.save();
         
         res.json({
           _id: project._id,
@@ -206,8 +181,7 @@ router.get('/:id', function(req: Request, res: Response) {
           rootFolderId: project.rootFolderId,
           createdAt: project.createdAt,
           updatedAt: project.updatedAt,
-          syncStatus: 'error',
-          syncError: 'Failed to load project metadata from Google Drive'
+          error: 'Failed to load project metadata from Google Drive'
         });
       }
     } catch (error) {
@@ -245,8 +219,9 @@ router.patch('/:id', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      const googleService = createGoogleService(user, userId);
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
       
+      // Update JSON metadata in Google Drive
       const updates: any = {};
       if (name !== undefined) updates.name = name.trim();
       if (description !== undefined) updates.description = description.trim();
@@ -255,9 +230,9 @@ router.patch('/:id', function(req: Request, res: Response) {
       
       const updatedMetadata = await googleService.updateProject(project.rootFolderId, updates);
       
+      // Update name in MongoDB if changed
       if (name !== undefined && name.trim() !== project.name) {
         project.name = name.trim();
-        project.lastSyncTime = new Date();
         await project.save();
       }
       
@@ -270,8 +245,6 @@ router.patch('/:id', function(req: Request, res: Response) {
         rootFolderId: project.rootFolderId,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
-        syncStatus: 'synced',
-        lastSyncTime: new Date(),
         metadata: updatedMetadata
       });
     } catch (error) {
@@ -283,7 +256,7 @@ router.patch('/:id', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Sync project
+// Sync project - now just validates JSON files exist
 router.post('/:id/sync', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
@@ -308,48 +281,30 @@ router.post('/:id/sync', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      project.syncStatus = 'syncing';
-      await project.save();
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+      
+      const [metadata, documents] = await Promise.all([
+        googleService.getProject(project.rootFolderId),
+        googleService.getDocuments(project.rootFolderId)
+      ]);
 
-      try {
-        const googleService = createGoogleService(user, userId);
-        
-        const [metadata, documents] = await Promise.all([
-          googleService.getProject(project.rootFolderId),
-          googleService.getDocuments(project.rootFolderId)
-        ]);
-        
-        project.syncStatus = 'synced';
-        project.lastSyncTime = new Date();
-        project.syncError = undefined;
-        await project.save();
+      console.log(`✅ Synced project "${project.name}" - ${documents.length} documents`);
 
-        console.log(`✅ Synced project "${project.name}" - ${documents.length} documents`);
-
-        res.json({ 
-          success: true, 
-          message: 'Project synced successfully',
-          lastSyncTime: project.lastSyncTime,
-          documentCount: documents.length,
-          metadata: {
-            version: metadata.version,
-            statistics: metadata.statistics
-          }
-        });
-      } catch (syncError) {
-        project.syncStatus = 'error';
-        project.syncError = syncError instanceof Error ? syncError.message : 'Unknown sync error';
-        await project.save();
-
-        console.error('Sync error:', syncError);
-        res.status(500).json({ 
-          error: 'Sync failed', 
-          details: syncError instanceof Error ? syncError.message : 'Unknown error' 
-        });
-      }
+      res.json({ 
+        success: true, 
+        message: 'Project synced successfully',
+        documentCount: documents.length,
+        metadata: {
+          version: metadata.version,
+          statistics: metadata.statistics
+        }
+      });
     } catch (error) {
-      console.error('Sync endpoint error:', error);
-      res.status(500).json({ error: 'Failed to initiate sync' });
+      console.error('Sync error:', error);
+      res.status(500).json({ 
+        error: 'Sync failed', 
+        details: error instanceof Error ? error.message : 'Unknown error' 
+      });
     }
   };
   
@@ -383,7 +338,7 @@ router.delete('/:id', function(req: Request, res: Response) {
 
       if (user.accessToken && user.refreshToken && project.rootFolderId) {
         try {
-          const googleService = createGoogleService(user, userId);
+          const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
           await googleService.deleteFile(project.rootFolderId);
           console.log(`🗑️ Deleted Google Drive folder: ${project.rootFolderId}`);
         } catch (googleError) {
@@ -391,6 +346,7 @@ router.delete('/:id', function(req: Request, res: Response) {
         }
       }
 
+      // Clean up any cached documents
       const deletedDocs = await Document.deleteMany({ project: id });
       console.log(`🗑️ Deleted ${deletedDocs.deletedCount} cached documents from MongoDB`);
 
@@ -436,7 +392,7 @@ router.get('/:id/stats', function(req: Request, res: Response) {
         return res.status(400).json({ error: 'Missing authentication tokens' });
       }
 
-      const googleService = createGoogleService(user, userId);
+      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
       
       const [metadata, documents] = await Promise.all([
         googleService.getProject(project.rootFolderId),
@@ -454,8 +410,6 @@ router.get('/:id/stats', function(req: Request, res: Response) {
           Math.round(documents.reduce((sum, doc) => sum + (doc.wordCount || 0), 0) / documents.length) : 0,
         compilableDocuments: documents.filter(doc => doc.includeInCompile).length,
         lastUpdated: metadata.statistics?.lastUpdated || new Date().toISOString(),
-        syncStatus: project.syncStatus,
-        lastSyncTime: project.lastSyncTime
       };
       
       res.json(stats);

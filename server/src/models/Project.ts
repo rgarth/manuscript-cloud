@@ -1,4 +1,4 @@
-// server/src/models/Project.ts
+// server/src/models/Project.ts - SIMPLIFIED VERSION
 import mongoose from 'mongoose';
 
 const ProjectSchema = new mongoose.Schema({
@@ -6,38 +6,15 @@ const ProjectSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
-  description: String,
   owner: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
   },
-  // Google Drive organization
-  rootFolderId: String, // Main project folder
-  chaptersFolderId: String, // Chapters subfolder
-  charactersFolderId: String, // Characters subfolder  
-  researchFolderId: String, // Research subfolder
-  
-  // Sync tracking
-  lastSyncTime: Date,
-  syncStatus: {
+  rootFolderId: {
     type: String,
-    enum: ['synced', 'syncing', 'error', 'never'],
-    default: 'never'
-  },
-  syncError: String,
-  
-  collaborators: [{
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-    },
-    role: {
-      type: String,
-      enum: ['viewer', 'editor', 'admin'],
-      default: 'viewer',
-    },
-  }],
+    required: true,
+  }, // Google Drive folder ID - all other data lives in JSON files there
 }, { timestamps: true });
 
 export default mongoose.model('Project', ProjectSchema);

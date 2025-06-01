@@ -1,7 +1,13 @@
+// ========================================
+// server/src/routes/admin.ts - FIXED
+// ========================================
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
+import mongoose from 'mongoose';
 import { cleanupMongoData, resetAllProjects, getStats } from '../utils/cleanupMongo.js';
-import User from '../models/User.js';
+
+// Import models with explicit typing to avoid Router conflicts
+const User = mongoose.model('User');
 
 const router = express.Router();
 
