@@ -148,83 +148,82 @@ router.post('/:id/sync', function(req: Request, res: Response) {
       res.status(500).json({ error: 'Failed to initiate sync' });
     }
   };
-
-  // Delete project route
-  router.delete('/:id', async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params;
-      const userId = req.headers['user-id'] as string;
-
-      if (!userId) {
-        return res.status(401).json({ error: 'User ID required' });
-      }
-
-      const project = await Project.findById(id);
-      if (!project) {
-        return res.status(404).json({ error: 'Project not found' });
-      }
-
-      // Verify ownership
-      if (project.owner.toString() !== userId) {
-        return res.status(403).json({ error: 'Not authorized to delete this project' });
-      }
-
-      const user = await User.findById(userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      // Get all documents in the project
-      const projectDocuments = await Document.find({ project: id });
-      
-      // If user has Google credentials, try to delete from Google Drive
-      if (user.accessToken && user.refreshToken && project.rootFolderId) {
-        try {
-          const googleService = new GoogleService(user.accessToken, user.refreshToken);
-          
-          // Delete individual documents from Google Drive
-          for (const doc of projectDocuments) {
-            if (doc.googleDriveId) {
-              try {
-                await googleService.deleteFile(doc.googleDriveId);
-                console.log(`🗑️ Deleted Google Drive file: ${doc.googleDriveId}`);
-              } catch (error) {
-                console.error(`❌ Failed to delete Google Drive file ${doc.googleDriveId}:`, error);
-                // Continue with deletion even if individual files fail
-              }
-            }
-          }
-          
-          // Delete the root folder (this should delete all remaining files)
-          await googleService.deleteFile(project.rootFolderId);
-          console.log(`🗑️ Deleted Google Drive folder: ${project.rootFolderId}`);
-        } catch (googleError) {
-          console.error('❌ Failed to delete from Google Drive:', googleError);
-          // Continue with local deletion even if Google Drive deletion fails
-        }
-      }
-
-      // Delete all documents from database
-      await Document.deleteMany({ project: id });
-      console.log(`🗑️ Deleted ${projectDocuments.length} documents from database`);
-
-      // Delete the project from database
-      await Project.findByIdAndDelete(id);
-      console.log(`🗑️ Deleted project: ${project.name}`);
-
-      return res.json({ 
-        success: true, 
-        message: 'Project and all associated documents deleted successfully',
-        deletedDocuments: projectDocuments.length
-      });
-    } catch (error) {
-      console.error('Delete project error:', error);
-      return res.status(500).json({ error: 'Failed to delete project' });
-    }
-  });
-
   
   handleRequest();
+});
+
+// Delete project route
+router.delete('/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.headers['user-id'] as string;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'User ID required' });
+    }
+
+    const project = await Project.findById(id);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    // Verify ownership
+    if (project.owner.toString() !== userId) {
+      return res.status(403).json({ error: 'Not authorized to delete this project' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Get all documents in the project
+    const projectDocuments = await Document.find({ project: id });
+    
+    // If user has Google credentials, try to delete from Google Drive
+    if (user.accessToken && user.refreshToken && project.rootFolderId) {
+      try {
+        const googleService = new GoogleService(user.accessToken, user.refreshToken, userId);
+        
+        // Delete individual documents from Google Drive
+        for (const doc of projectDocuments) {
+          if (doc.googleDriveId) {
+            try {
+              await googleService.deleteFile(doc.googleDriveId);
+              console.log(`🗑️ Deleted Google Drive file: ${doc.googleDriveId}`);
+            } catch (error) {
+              console.error(`❌ Failed to delete Google Drive file ${doc.googleDriveId}:`, error);
+              // Continue with deletion even if individual files fail
+            }
+          }
+        }
+        
+        // Delete the root folder (this should delete all remaining files)
+        await googleService.deleteFile(project.rootFolderId);
+        console.log(`🗑️ Deleted Google Drive folder: ${project.rootFolderId}`);
+      } catch (googleError) {
+        console.error('❌ Failed to delete from Google Drive:', googleError);
+        // Continue with local deletion even if Google Drive deletion fails
+      }
+    }
+
+    // Delete all documents from database
+    await Document.deleteMany({ project: id });
+    console.log(`🗑️ Deleted ${projectDocuments.length} documents from database`);
+
+    // Delete the project from database
+    await Project.findByIdAndDelete(id);
+    console.log(`🗑️ Deleted project: ${project.name}`);
+
+    return res.json({ 
+      success: true, 
+      message: 'Project and all associated documents deleted successfully',
+      deletedDocuments: projectDocuments.length
+    });
+  } catch (error) {
+    console.error('Delete project error:', error);
+    return res.status(500).json({ error: 'Failed to delete project' });
+  }
 });
 
 export default router;
