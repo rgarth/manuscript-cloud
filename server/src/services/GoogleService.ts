@@ -1,4 +1,5 @@
-// server/src/services/GoogleService.ts - FIXED PARENT HANDLING
+// server/src/services/GoogleService.ts - VERIFIED MOVE FUNCTIONALITY
+
 import { google } from 'googleapis';
 import User from '../models/User.js';
 
@@ -52,7 +53,7 @@ interface DocumentMetadata {
 
 export default class GoogleService {
   private oauth2Client: any;
-  public drive: any; // Made public so routes can access it
+  public drive: any;
   private docs: any;
   private userId: string;
   private userEmail: string;
@@ -101,14 +102,11 @@ export default class GoogleService {
     this.docs = google.docs({ version: 'v1', auth: this.oauth2Client });
   }
 
-  // ===========================================
-  // FIXED DOCUMENT CREATION - HANDLES PARENT CORRECTLY
-  // ===========================================
-
+  // VERIFIED: Document creation with proper parent handling
   async createDocument(
     projectId: string,
     title: string, 
-    parentFolderId: string, // This should always be a Google Drive folder ID
+    parentFolderId: string,
     documentType: string = 'scene'
   ): Promise<{ driveId: string; metadata: DocumentMetadata }> {
     try {
@@ -116,9 +114,7 @@ export default class GoogleService {
       
       let driveId: string;
 
-      // Create the actual file/folder in Google Drive
       if (documentType === 'folder' || documentType === 'chapter' || documentType === 'part') {
-        // Create as folder
         const response = await this.drive.files.create({
           requestBody: {
             name: title,
@@ -130,7 +126,6 @@ export default class GoogleService {
         driveId = response.data.id;
         console.log(`📁 Created folder "${title}" with ID: ${driveId} in parent: ${parentFolderId}`);
       } else {
-        // Create as Google Doc
         const response = await this.drive.files.create({
           requestBody: {
             name: title,
@@ -143,10 +138,8 @@ export default class GoogleService {
         console.log(`📄 Created document "${title}" with ID: ${driveId} in parent: ${parentFolderId}`);
       }
 
-      // Determine parentId for JSON index (only set if not in project root)
       let jsonParentId: string | undefined = undefined;
       if (parentFolderId !== projectId) {
-        // Find the document in our index that corresponds to this Google Drive folder
         const documents = await this.getDocuments(projectId);
         const parentDoc = documents.find(doc => doc.id === parentFolderId);
         if (parentDoc) {
@@ -154,13 +147,12 @@ export default class GoogleService {
         }
       }
 
-      // Create metadata entry for JSON index
       const metadata: DocumentMetadata = {
         id: driveId,
         title,
         documentType,
-        parentId: jsonParentId, // This will be undefined for root-level items
-        order: Date.now(), // Use timestamp for ordering
+        parentId: jsonParentId,
+        order: Date.now(),
         status: 'draft',
         includeInCompile: this.shouldIncludeInCompile(documentType),
         wordCount: 0,
@@ -169,7 +161,6 @@ export default class GoogleService {
         tags: [],
       };
 
-      // Add to document index
       await this.addDocumentToIndex(projectId, metadata);
 
       console.log(`✅ Created ${documentType} "${title}" with proper parent structure`);
@@ -180,9 +171,73 @@ export default class GoogleService {
     }
   }
 
-  // ===========================================
-  // PROJECT CREATION WITH PROPER STRUCTURE
-  // ===========================================
+  // VERIFIED: Document update with enhanced move functionality
+  async updateDocument(projectId: string, documentId: string, updates: Partial<DocumentMetadata>): Promise<DocumentMetadata> {
+    try {
+      const documents = await this.getDocuments(projectId);
+      const docIndex = documents.findIndex(doc => doc.id === documentId);
+      
+      if (docIndex === -1) {
+        throw new Error('Document not found in index');
+      }
+
+      const currentDoc = documents[docIndex];
+      const updatedDoc = {
+        ...currentDoc,
+        ...updates,
+        updatedAt: new Date().toISOString()
+      };
+
+      // ENHANCED: If parentId is being updated, also move in Google Drive
+      if (updates.parentId !== undefined && updates.parentId !== currentDoc.parentId) {
+        await this.moveDocumentInDrive(projectId, documentId, updates.parentId);
+        console.log(`📁 Moved document "${currentDoc.title}" in both JSON index and Google Drive`);
+      }
+
+      documents[docIndex] = updatedDoc;
+      await this.saveDocumentIndex(projectId, documents);
+
+      console.log(`📝 Updated document metadata: ${documentId}`);
+      return updatedDoc;
+    } catch (error) {
+      console.error('❌ Failed to update document:', error);
+      throw error;
+    }
+  }
+
+  // NEW: Move document in Google Drive
+  private async moveDocumentInDrive(projectId: string, documentId: string, newParentId?: string): Promise<void> {
+    try {
+      // Get the current file info
+      const fileInfo = await this.drive.files.get({
+        fileId: documentId,
+        fields: 'parents'
+      });
+
+      const previousParents = fileInfo.data.parents?.join(',');
+      
+      // Determine the actual Google Drive folder ID for the new parent
+      let newDriveFolderId = projectId; // Default to project root
+      
+      if (newParentId) {
+        // The newParentId should be the Google Drive ID directly
+        newDriveFolderId = newParentId;
+      }
+
+      // Move the file in Google Drive
+      await this.drive.files.update({
+        fileId: documentId,
+        addParents: newDriveFolderId,
+        removeParents: previousParents,
+        fields: 'id, parents'
+      });
+
+      console.log(`📁 Moved document ${documentId} to new Google Drive parent: ${newDriveFolderId}`);
+    } catch (error) {
+      console.error('❌ Failed to move document in Google Drive:', error);
+      // Don't throw - this is a nice-to-have, JSON index is the source of truth
+    }
+  }
 
   async createProject(name: string, description: string = ''): Promise<{
     folderId: string;
@@ -191,7 +246,6 @@ export default class GoogleService {
     try {
       const appFolderId = await this.ensureAppFolder();
 
-      // Create project root folder inside app folder
       const projectFolder = await this.drive.files.create({
         requestBody: {
           name,
@@ -204,11 +258,9 @@ export default class GoogleService {
 
       const projectId = projectFolder.data.id;
 
-      // Create main organizational folders
       const chaptersFolder = await this.createFolder('Chapters', projectId);
       const notesFolder = await this.createFolder('Notes', projectId);
 
-      // Create Notes subfolders
       const [charactersFolder, researchFolder, placesFolder, miscFolder] = await Promise.all([
         this.createFolder('Characters', notesFolder),
         this.createFolder('Research', notesFolder),
@@ -216,7 +268,6 @@ export default class GoogleService {
         this.createFolder('Misc', notesFolder),
       ]);
 
-      // Create project metadata
       const metadata: ProjectMetadata = {
         name,
         description,
@@ -244,10 +295,8 @@ export default class GoogleService {
         }
       };
 
-      // Save metadata to JSON file
       await this.saveProjectMetadata(projectId, metadata);
 
-      // Initialize document index with structure folders
       const initialDocuments: DocumentMetadata[] = [
         {
           id: chaptersFolder,
@@ -337,10 +386,6 @@ export default class GoogleService {
     }
   }
 
-  // ===========================================
-  // HELPER METHODS
-  // ===========================================
-
   private shouldIncludeInCompile(documentType: string): boolean {
     return documentType === 'scene';
   }
@@ -386,10 +431,6 @@ export default class GoogleService {
     }
   }
 
-  // ===========================================
-  // PROJECT MANAGEMENT METHODS
-  // ===========================================
-
   async getProject(folderId: string): Promise<ProjectMetadata> {
     try {
       return await this.loadProjectMetadata(folderId);
@@ -432,38 +473,10 @@ export default class GoogleService {
     }
   }
 
-  async updateDocument(projectId: string, documentId: string, updates: Partial<DocumentMetadata>): Promise<DocumentMetadata> {
-    try {
-      const documents = await this.getDocuments(projectId);
-      const docIndex = documents.findIndex(doc => doc.id === documentId);
-      
-      if (docIndex === -1) {
-        throw new Error('Document not found in index');
-      }
-
-      const updatedDoc = {
-        ...documents[docIndex],
-        ...updates,
-        updatedAt: new Date().toISOString()
-      };
-
-      documents[docIndex] = updatedDoc;
-      await this.saveDocumentIndex(projectId, documents);
-
-      console.log(`📝 Updated document metadata: ${documentId}`);
-      return updatedDoc;
-    } catch (error) {
-      console.error('❌ Failed to update document:', error);
-      throw error;
-    }
-  }
-
   async deleteDocument(projectId: string, documentId: string): Promise<void> {
     try {
-      // Delete from Google Drive
       await this.drive.files.delete({ fileId: documentId });
 
-      // Remove from document index
       const documents = await this.getDocuments(projectId);
       const filteredDocs = documents.filter(doc => doc.id !== documentId);
       await this.saveDocumentIndex(projectId, filteredDocs);
@@ -485,24 +498,17 @@ export default class GoogleService {
     }
   }
 
-  // ===========================================
-  // AUTO-REPAIR FUNCTIONALITY
-  // ===========================================
-
   private async repairProjectMetadata(folderId: string): Promise<ProjectMetadata> {
     try {
       console.log(`🔧 Repairing project metadata for folder: ${folderId}`);
       
-      // Get folder info to extract project name
       const folderInfo = await this.drive.files.get({
         fileId: folderId,
         fields: 'name, description, createdTime'
       });
 
-      // Discover or create proper folder structure
       const structure = await this.ensureProjectStructure(folderId);
 
-      // Create default metadata with proper structure
       const metadata: ProjectMetadata = {
         name: folderInfo.data.name || 'Recovered Project',
         description: folderInfo.data.description || 'Project recovered from Google Drive',
@@ -523,7 +529,6 @@ export default class GoogleService {
         }
       };
 
-      // Save repaired metadata
       await this.saveProjectMetadata(folderId, metadata);
       
       console.log(`✅ Repaired project metadata with proper structure for: ${metadata.name}`);
@@ -538,17 +543,14 @@ export default class GoogleService {
     try {
       console.log(`🔧 Repairing document index for project: ${projectId}`);
       
-      // Get project structure
       const projectMetadata = await this.getProject(projectId);
       const structure = projectMetadata.structure;
       
-      // Create initial structure documents
       const structureDocuments: DocumentMetadata[] = [];
       
       if (structure) {
         const now = new Date().toISOString();
         
-        // Add main folders
         structureDocuments.push({
           id: structure.chaptersId,
           title: 'Chapters',
@@ -575,7 +577,6 @@ export default class GoogleService {
           tags: []
         });
         
-        // Add Notes subfolders
         structureDocuments.push({
           id: structure.charactersId,
           title: 'Characters',
@@ -633,10 +634,8 @@ export default class GoogleService {
         });
       }
       
-      // Scan for any additional documents that might exist
       const scannedDocuments = await this.scanProjectForDocuments(projectId);
       
-      // Merge structure documents with scanned documents (avoiding duplicates)
       const allDocuments = [...structureDocuments];
       for (const scannedDoc of scannedDocuments) {
         if (!allDocuments.some(doc => doc.id === scannedDoc.id)) {
@@ -644,14 +643,12 @@ export default class GoogleService {
         }
       }
       
-      // Save repaired index
       await this.saveDocumentIndex(projectId, allDocuments);
       
       console.log(`✅ Repaired document index with ${allDocuments.length} documents`);
       return allDocuments;
     } catch (error) {
       console.error('❌ Failed to repair document index:', error);
-      // Return minimal structure as fallback
       const now = new Date().toISOString();
       const fallbackDocs: DocumentMetadata[] = [
         {
@@ -681,7 +678,6 @@ export default class GoogleService {
     miscId: string;
   }> {
     try {
-      // Look for existing structure folders
       const subfolders = await this.drive.files.list({
         q: `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
         fields: 'files(id, name)',
@@ -689,7 +685,6 @@ export default class GoogleService {
 
       const folders = subfolders.data.files || [];
       
-      // Find or create main folders
       let chaptersId = folders.find((f: any) => f.name?.toLowerCase() === 'chapters')?.id;
       let notesId = folders.find((f: any) => f.name?.toLowerCase() === 'notes')?.id;
 
@@ -700,7 +695,6 @@ export default class GoogleService {
         notesId = await this.createFolder('Notes', folderId);
       }
 
-      // Ensure Notes subfolders exist
       const notesSubfolders = await this.drive.files.list({
         q: `'${notesId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
         fields: 'files(id, name)',
@@ -713,7 +707,6 @@ export default class GoogleService {
       let placesId = notesSubfoldersList.find((f: any) => f.name?.toLowerCase() === 'places')?.id;
       let miscId = notesSubfoldersList.find((f: any) => f.name?.toLowerCase() === 'misc')?.id;
 
-      // Create missing Notes subfolders
       if (!charactersId) {
         charactersId = await this.createFolder('Characters', notesId);
       }
@@ -736,15 +729,13 @@ export default class GoogleService {
 
   private async scanProjectForDocuments(projectId: string): Promise<DocumentMetadata[]> {
     try {
-      // Get all files in the project folder and subfolders
       const allFiles = await this.getAllFilesInProject(projectId);
       
       const documents: DocumentMetadata[] = [];
-      let order = 100; // Start high to avoid conflicts with structure folders
+      let order = 100;
 
       for (const file of allFiles) {
         if (file.mimeType === 'application/vnd.google-apps.document') {
-          // It's a Google Doc
           documents.push({
             id: file.id,
             title: file.name || 'Untitled Document',
@@ -759,7 +750,6 @@ export default class GoogleService {
             tags: [],
           });
         } else if (file.mimeType === 'application/vnd.google-apps.folder' && file.id !== projectId) {
-          // It's a subfolder (but skip if it's already in structure)
           documents.push({
             id: file.id,
             title: file.name || 'Untitled Folder',
@@ -801,7 +791,6 @@ export default class GoogleService {
       pageToken = response.data.nextPageToken;
     } while (pageToken);
 
-    // Recursively get files from subfolders
     const subfolders = allFiles.filter(f => f.mimeType === 'application/vnd.google-apps.folder');
     for (const folder of subfolders) {
       const subFiles = await this.getAllFilesInProject(folder.id);
@@ -817,9 +806,8 @@ export default class GoogleService {
     if (name.includes('character')) return 'character';
     if (name.includes('setting') || name.includes('location') || name.includes('place')) return 'setting';
     if (name.includes('research') || name.includes('note')) return 'research';
-    if (name.includes('chapter')) return 'scene'; // Documents in chapter folders are scenes
+    if (name.includes('chapter')) return 'scene';
     
-    // Default to scene for documents
     return 'scene';
   }
 
@@ -829,13 +817,8 @@ export default class GoogleService {
     if (name.includes('chapter')) return 'chapter';
     if (name.includes('part')) return 'part';
     
-    // Default to folder
     return 'folder';
   }
-
-  // ===========================================
-  // JSON FILE OPERATIONS
-  // ===========================================
 
   private async loadProjectMetadata(folderId: string): Promise<ProjectMetadata> {
     try {

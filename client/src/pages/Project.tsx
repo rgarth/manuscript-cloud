@@ -1,4 +1,4 @@
-// client/src/pages/Project.tsx - FIXED ALL SET ISSUES
+// client/src/pages/Project.tsx - FIXED DRAG AND DROP TO PERSIST TO BACKEND
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -258,6 +258,7 @@ const Project = () => {
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [expandedNodes, setExpandedNodes] = useState<string[]>([]);
   const [draggedDocument, setDraggedDocument] = useState<Document | null>(null);
+  const [isMoving, setIsMoving] = useState(false); // NEW: Track move operation
   
   // New document form state
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -346,10 +347,11 @@ const Project = () => {
     return false;
   };
 
+  // FIXED: Now actually calls the backend API to persist the move
   const handleDrop = async (e: React.DragEvent, targetDoc: Document) => {
     e.preventDefault();
     
-    if (!draggedDocument || draggedDocument.id === targetDoc.id) {
+    if (!draggedDocument || draggedDocument.id === targetDoc.id || isMoving) {
       setDraggedDocument(null);
       return;
     }
@@ -367,33 +369,49 @@ const Project = () => {
       return;
     }
 
+    // Store original parent for rollback
+    const originalParentId = draggedDocument.parentId;
+    
+    // Optimistically update UI first
+    setProjectDocs(prev => prev.map(doc => {
+      if (doc.id === draggedDocument.id) {
+        return { ...doc, parentId: targetDoc.id };
+      }
+      return doc;
+    }));
+    
+    setExpandedNodes(prev => {
+      if (!prev.includes(targetDoc.id)) {
+        return [...prev, targetDoc.id];
+      }
+      return prev;
+    });
+
+    // NEW: Actually call the backend API to persist the move
+    setIsMoving(true);
     try {
-      setProjectDocs(prev => prev.map(doc => {
-        if (doc.id === draggedDocument.id) {
-          return { ...doc, parentId: targetDoc.id };
-        }
-        return doc;
-      }));
-      
-      setExpandedNodes(prev => {
-        if (!prev.includes(targetDoc.id)) {
-          return [...prev, targetDoc.id];
-        }
-        return prev;
+      await documents.move(draggedDocument.id, {
+        newParentId: targetDoc.id
       });
       
-      console.log(`Moved "${draggedDocument.title}" to "${targetDoc.title}"`);
+      console.log(`✅ Successfully moved "${draggedDocument.title}" to "${targetDoc.title}"`);
     } catch (error) {
-      console.error('Failed to move document:', error);
+      console.error('❌ Failed to move document on backend:', error);
+      
+      // Rollback the UI change on error
       setProjectDocs(prev => prev.map(doc => {
         if (doc.id === draggedDocument.id) {
-          return { ...doc, parentId: draggedDocument.parentId };
+          return { ...doc, parentId: originalParentId };
         }
         return doc;
       }));
+      
+      // Show user-friendly error message
+      alert(`Failed to move "${draggedDocument.title}". The change has been reverted.`);
+    } finally {
+      setIsMoving(false);
+      setDraggedDocument(null);
     }
-    
-    setDraggedDocument(null);
   };
 
   const handleCreateDocument = async (e: React.FormEvent) => {
@@ -584,6 +602,7 @@ const Project = () => {
           <p className="project-meta">
             Created: {new Date(project.createdAt).toLocaleDateString()} | 
             Documents: {projectDocs.length}
+            {isMoving && <span className="move-indicator"> | Moving document...</span>}
           </p>
         </div>
         <div className="project-actions">
@@ -602,6 +621,7 @@ const Project = () => {
                 onClick={() => setShowCreateForm(!showCreateForm)}
                 className="btn btn-sm btn-primary"
                 title="Add new document"
+                disabled={isMoving}
               >
                 ➕
               </button>
@@ -616,13 +636,13 @@ const Project = () => {
                     onChange={(e) => setNewDocTitle(e.target.value)}
                     placeholder="Document title..."
                     className="document-input"
-                    disabled={isCreating}
+                    disabled={isCreating || isMoving}
                   />
                   <select
                     value={newDocType}
                     onChange={(e) => setNewDocType(e.target.value)}
                     className="document-type-select"
-                    disabled={isCreating}
+                    disabled={isCreating || isMoving}
                   >
                     <option value="scene">🎬 Scene</option>
                     <option value="chapter">📖 Chapter</option>
@@ -637,7 +657,7 @@ const Project = () => {
                   <div className="form-buttons">
                     <button
                       type="submit"
-                      disabled={isCreating || !newDocTitle.trim()}
+                      disabled={isCreating || !newDocTitle.trim() || isMoving}
                       className="btn btn-sm btn-primary"
                     >
                       {isCreating ? 'Adding...' : 'Add'}
@@ -646,6 +666,7 @@ const Project = () => {
                       type="button"
                       onClick={() => setShowCreateForm(false)}
                       className="btn btn-sm btn-secondary"
+                      disabled={isMoving}
                     >
                       Cancel
                     </button>
@@ -766,6 +787,7 @@ const Project = () => {
                   <li>• <strong>Drag & Drop:</strong> Drag documents between folders to reorganize</li>
                   <li>• <strong>Expand/Collapse:</strong> Click folder icons to show/hide contents</li>
                   <li>• <strong>Organization:</strong> Use chapters to group scenes, folders for organization</li>
+                  {isMoving && <li>• <strong>Moving...</strong> Document move in progress</li>}
                 </ul>
               </div>
             </div>

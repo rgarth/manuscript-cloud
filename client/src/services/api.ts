@@ -1,4 +1,4 @@
-// client/src/services/api.ts
+// client/src/services/api.ts - UPDATED WITH MOVE METHOD
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
@@ -47,6 +47,7 @@ export const documents = {
     synopsis?: string,
     metadata?: any,
   }) => api.patch(`/documents/${id}`, data),
+  // ADDED: Move method for drag and drop
   move: (id: string, data: {
     newParentId?: string,
     newOrder?: number,
