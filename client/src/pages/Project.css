@@ -81,6 +81,32 @@
   border-top: 1px solid #e9ecef;
 }
 
+.location-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.context-icon {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.context-text {
+  color: #1e40af;
+  font-weight: 500;
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .create-document-form {
   display: flex;
   flex-direction: column;

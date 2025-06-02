@@ -402,9 +402,20 @@ const Project = () => {
     
     setIsCreating(true);
     try {
-      const parentId = selectedDocument?.id && ['folder', 'chapter', 'part'].includes(selectedDocument.documentType) 
-        ? selectedDocument.id 
-        : getDefaultParentForType(newDocType);
+      let parentId: string;
+      
+      if (selectedDocument) {
+        if (['folder', 'chapter', 'part'].includes(selectedDocument.documentType)) {
+          // Selected document is a folder - create inside it
+          parentId = selectedDocument.id;
+        } else {
+          // Selected document is a document - create in the same parent location
+          parentId = selectedDocument.parentId || getDefaultParentForType(newDocType);
+        }
+      } else {
+        // No selection - use default location for document type
+        parentId = getDefaultParentForType(newDocType);
+      }
 
       const response = await documents.create({
         title: newDocTitle,
@@ -426,7 +437,13 @@ const Project = () => {
         });
       }
       
-      console.log(`Created ${newDocType} "${newDocTitle}"`);
+      const locationContext = selectedDocument 
+        ? ['folder', 'chapter', 'part'].includes(selectedDocument.documentType)
+          ? `inside "${selectedDocument.title}"`
+          : `in same location as "${selectedDocument.title}"`
+        : 'in default location';
+      
+      console.log(`Created ${newDocType} "${newDocTitle}" ${locationContext}`);
     } catch (error) {
       console.error('Failed to create document:', error);
     } finally {
