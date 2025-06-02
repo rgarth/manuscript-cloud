@@ -178,10 +178,7 @@ const Dashboard = () => {
       <header className="dashboard-header">
         <div className="header-content">
           <div className="header-text">
-            <div className="app-title">
-              <img src="/logo.svg" alt="Manuscript Cloud" className="app-logo" />
-              <h1>Manuscript Cloud</h1>
-            </div>
+            <h1>Manuscript Cloud</h1>
             <p>Organize your writing projects</p>
           </div>
           <div className="header-stats">

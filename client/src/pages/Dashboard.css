@@ -623,7 +623,7 @@ h3.project-title {
 .app-logo {
   width: 48px;
   height: 48px;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
 }
 
 .app-title h1 {
