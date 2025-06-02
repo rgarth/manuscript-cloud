@@ -1,4 +1,4 @@
-// server/src/services/GoogleService.ts - FIXED DOCUMENT CREATION
+// server/src/services/GoogleService.ts - FIXED PARENT HANDLING
 import { google } from 'googleapis';
 import User from '../models/User.js';
 
@@ -52,7 +52,7 @@ interface DocumentMetadata {
 
 export default class GoogleService {
   private oauth2Client: any;
-  private drive: any;
+  public drive: any; // Made public so routes can access it
   private docs: any;
   private userId: string;
   private userEmail: string;
@@ -108,32 +108,50 @@ export default class GoogleService {
   async createDocument(
     projectId: string,
     title: string, 
-    parentId: string, 
+    parentFolderId: string, // This should always be a Google Drive folder ID
     documentType: string = 'scene'
   ): Promise<{ driveId: string; metadata: DocumentMetadata }> {
     try {
-      console.log(`📝 Creating ${documentType} "${title}" in parent: ${parentId}`);
+      console.log(`📝 Creating ${documentType} "${title}" in Google Drive folder: ${parentFolderId}`);
       
       let driveId: string;
-      let actualParentId = parentId;
 
       // Create the actual file/folder in Google Drive
       if (documentType === 'folder' || documentType === 'chapter' || documentType === 'part') {
         // Create as folder
-        driveId = await this.createFolder(title, actualParentId);
-        console.log(`📁 Created folder "${title}" with ID: ${driveId} in parent: ${actualParentId}`);
+        const response = await this.drive.files.create({
+          requestBody: {
+            name: title,
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [parentFolderId],
+          },
+          fields: 'id',
+        });
+        driveId = response.data.id;
+        console.log(`📁 Created folder "${title}" with ID: ${driveId} in parent: ${parentFolderId}`);
       } else {
         // Create as Google Doc
         const response = await this.drive.files.create({
           requestBody: {
             name: title,
             mimeType: 'application/vnd.google-apps.document',
-            parents: [actualParentId],
+            parents: [parentFolderId],
           },
           fields: 'id',
         });
         driveId = response.data.id;
-        console.log(`📄 Created document "${title}" with ID: ${driveId} in parent: ${actualParentId}`);
+        console.log(`📄 Created document "${title}" with ID: ${driveId} in parent: ${parentFolderId}`);
+      }
+
+      // Determine parentId for JSON index (only set if not in project root)
+      let jsonParentId: string | undefined = undefined;
+      if (parentFolderId !== projectId) {
+        // Find the document in our index that corresponds to this Google Drive folder
+        const documents = await this.getDocuments(projectId);
+        const parentDoc = documents.find(doc => doc.id === parentFolderId);
+        if (parentDoc) {
+          jsonParentId = parentDoc.id;
+        }
       }
 
       // Create metadata entry for JSON index
@@ -141,7 +159,7 @@ export default class GoogleService {
         id: driveId,
         title,
         documentType,
-        parentId: actualParentId === projectId ? undefined : actualParentId,
+        parentId: jsonParentId, // This will be undefined for root-level items
         order: Date.now(), // Use timestamp for ordering
         status: 'draft',
         includeInCompile: this.shouldIncludeInCompile(documentType),
