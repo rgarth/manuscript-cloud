@@ -42,6 +42,8 @@ export const documents = {
   update: (id: string, data: any) => api.patch(`/documents/${id}`, data),
   move: (id: string, data: { newParentId?: string }) => api.patch(`/documents/${id}/move`, data),
   delete: (id: string, force: boolean = false) => api.delete(`/documents/${id}${force ? '?force=true' : ''}`),
+  canDelete: (id: string) => api.get(`/documents/${id}/can-delete`),
 };
+
 
 export default api;

@@ -140,6 +140,53 @@ router.patch('/:id/move', function(req: Request, res: Response) {
   handleRequest();
 });
 
+// Check if document can be deleted
+router.get('/:id/can-delete', function(req: Request, res: Response) {
+  const handleRequest = async () => {
+    try {
+      const { id } = req.params;
+      const userId = req.headers['user-id'] as string;
+      
+      if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
+      }
+      
+      const document = await Document.findById(id).populate('project');
+      if (!document) {
+        return res.status(404).json({ error: 'Document not found' });
+      }
+      
+      if ((document.project as any).owner.toString() !== userId) {
+        return res.status(403).json({ error: 'Not authorized' });
+      }
+      
+      // Check for children
+      const children = await Document.find({ parent: id });
+      const canDelete = children.length === 0;
+      
+      res.json({
+        canDelete,
+        childCount: children.length,
+        children: children.map(child => ({
+          id: child._id,
+          title: child.title,
+          type: child.documentType,
+        })),
+        document: {
+          id: document._id,
+          title: document.title,
+          type: document.documentType,
+        },
+      });
+    } catch (error) {
+      console.error('Can delete check error:', error);
+      res.status(500).json({ error: 'Failed to check deletion status' });
+    }
+  };
+  
+  handleRequest();
+});
+
 // Delete document
 router.delete('/:id', function(req: Request, res: Response) {
   const handleRequest = async () => {

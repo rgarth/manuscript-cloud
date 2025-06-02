@@ -60,8 +60,8 @@ const DocumentEditor: React.FC<DocumentEditorProps> = ({
       }
     };
 
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    window.document.addEventListener('keydown', handleKeyDown);
+    return () => window.document.removeEventListener('keydown', handleKeyDown);
   }, [handleSave]);
 
   const handleEditorChange = (newContent: string) => {

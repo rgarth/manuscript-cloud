@@ -446,8 +446,8 @@ const Project = () => {
       
       if (parentId) {
         setExpandedNodes(prev => {
-          if (!prev.includes(parentId)) {
-            return [...prev, parentId];
+          if (!prev.includes(parentId!)) {  // Add ! since we know it's defined here
+            return [...prev, parentId!];
           }
           return prev;
         });
