@@ -1,5 +1,19 @@
 /* client/src/components/DocumentEditor.css */
 
+.document-editor-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
 .document-editor {
   display: flex;
   flex-direction: column;
@@ -7,16 +21,20 @@
   background: white;
   border-radius: 12px;
   overflow: hidden;
+  max-width: 1200px;
+  width: 100%;
+  max-height: 90vh;
 }
 
 .document-editor.focus-mode {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 1000;
-  border-radius: 0;
+  position: relative;
+  top: auto;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  z-index: auto;
+  border-radius: 12px;
+  height: 100%;
 }
 
 .editor-header {
@@ -50,6 +68,67 @@
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: #f1f5f9;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+
+.btn-small {
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 40px;
+}
+
+.btn-small:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.btn-small.active {
+  background: #3b82f6;
+  color: white;
+}
+
+.editor-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.editor-stats span {
+  white-space: nowrap;
+}
+
+.unsaved {
+  color: #ef4444 !important;
+  font-weight: 500;
+}
+
+.saving {
+  color: #f59e0b !important;
+  font-weight: 500;
 }
 
 .word-count {

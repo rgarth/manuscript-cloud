@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projects, documents } from '../services/api';
 import DocumentDeleteModal from '../components/DocumentDeleteModal';
+import DocumentEditor from '../components/DocumentEditor';
 import './Project.css';
 
 interface Document {
@@ -19,6 +20,14 @@ interface Document {
   createdAt: string;
   updatedAt: string;
   customFields?: Record<string, any>;
+  content?: string;
+  metadata?: {
+    wordCount?: number;
+    status?: 'draft' | 'review' | 'final' | 'published';
+    tags?: string[];
+    includeInCompile?: boolean;
+    customFields?: Record<string, any>;
+  };
 }
 
 interface ProjectData {
@@ -49,6 +58,7 @@ interface TreeNodeProps {
   onDrop: (e: React.DragEvent, targetDoc: Document) => void;
   onSelect: (doc: Document) => void;
   onDelete: (doc: Document) => void;
+  onEdit: (doc: Document) => void;
   selectedId?: string;
   allDocuments: Document[];
   expandedNodes: string[];
@@ -64,6 +74,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   onDrop,
   onSelect,
   onDelete,
+  onEdit,
   selectedId,
   allDocuments,
   expandedNodes,
@@ -98,14 +109,13 @@ const TreeNode: React.FC<TreeNodeProps> = ({
     e.stopPropagation();
     console.log('Selecting document:', document.title, 'ID:', document.id);
     onSelect(document);
-    if (hasChildren && isFolder && e.detail === 2) { // Double click to expand
-      onToggleExpand(document.id);
-    }
   };
 
   const handleExpandClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    onToggleExpand(document.id);
+    if (hasChildren && isFolder) {
+      onToggleExpand(document.id);
+    }
   };
 
   const handleDeleteClick = (e: React.MouseEvent) => {
@@ -191,7 +201,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
               className="action-btn edit-btn"
               onClick={(e) => {
                 e.stopPropagation();
-                console.log('Edit document:', document.title);
+                onEdit(document);
               }}
               title="Edit document"
             >
@@ -222,6 +232,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
               onDrop={onDrop}
               onSelect={onSelect}
               onDelete={onDelete}
+              onEdit={onEdit}
               allDocuments={allDocuments}
               expandedNodes={expandedNodes}
               childrenMap={childrenMap}
@@ -249,6 +260,9 @@ const Project = () => {
   const [newDocTitle, setNewDocTitle] = useState('');
   const [newDocType, setNewDocType] = useState('scene');
   const [isCreating, setIsCreating] = useState(false);
+
+  // Document editor state
+  const [editingDocument, setEditingDocument] = useState<Document | null>(null);
 
   // Delete modal state
   const [deleteModal, setDeleteModal] = useState<{
@@ -288,6 +302,60 @@ const Project = () => {
       .sort((a, b) => a.order - b.order);
   }, [projectDocs, project?.rootFolderId]);
 
+  // Calculate manuscript word count
+  const manuscriptWordCount = useMemo(() => {
+    const findManuscriptFolder = (docs: Document[]): Document | null => {
+      return docs.find(doc => 
+        doc.documentType === 'folder' && 
+        (doc.title.toLowerCase().includes('manuscript') || doc.title.toLowerCase() === 'manuscript')
+      ) || null;
+    };
+
+    const calculateWordCountRecursively = (parentId: string): number => {
+      const children = childrenMap.get(parentId) || [];
+      return children.reduce((total, child) => {
+        let childWordCount = child.wordCount || 0;
+        console.log(`📄 Document "${child.title}" has wordCount:`, childWordCount, 'metadata:', child.metadata);
+        // Add word count from nested children
+        childWordCount += calculateWordCountRecursively(child.id);
+        return total + childWordCount;
+      }, 0);
+    };
+
+    const manuscriptFolder = findManuscriptFolder(projectDocs);
+    if (manuscriptFolder) {
+      console.log('📁 Found manuscript folder:', manuscriptFolder.title);
+      const wordCount = calculateWordCountRecursively(manuscriptFolder.id);
+      console.log('📊 Total manuscript word count:', wordCount);
+      return wordCount;
+    } else {
+      console.log('❌ No manuscript folder found');
+      return 0;
+    }
+  }, [projectDocs, childrenMap]);
+
+  // Calculate word count for selected document (including children)
+  const selectedDocumentWordCount = useMemo(() => {
+    if (!selectedDocument) return 0;
+
+    const calculateWordCountRecursively = (parentId: string): number => {
+      const children = childrenMap.get(parentId) || [];
+      return children.reduce((total, child) => {
+        let childWordCount = child.wordCount || 0;
+        // Add word count from nested children
+        childWordCount += calculateWordCountRecursively(child.id);
+        return total + childWordCount;
+      }, 0);
+    };
+
+    // For individual documents, return their own word count
+    // For folders/chapters, return their word count plus all children
+    const ownWordCount = selectedDocument.wordCount || 0;
+    const childrenWordCount = calculateWordCountRecursively(selectedDocument.id);
+    
+    return ownWordCount + childrenWordCount;
+  }, [selectedDocument, childrenMap]);
+
   useEffect(() => {
     if (!id) return;
     
@@ -301,12 +369,24 @@ const Project = () => {
         
         setProject(projectResponse.data as ProjectData);
         
+        console.log('🔍 Raw documents from backend:', docsResponse.data);
+        
         // Map the backend data to frontend format
         const docs = (docsResponse.data as any[]).map(doc => ({
           ...doc,
           id: doc._id, // Map _id to id for frontend consistency
-          parentId: doc.parent // Map parent to parentId
+          parentId: doc.parent, // Map parent to parentId
+          wordCount: doc.metadata?.wordCount || 0, // Map metadata.wordCount to wordCount
+          status: doc.metadata?.status,
+          tags: doc.metadata?.tags,
+          includeInCompile: doc.metadata?.includeInCompile
         }));
+        
+        console.log('📊 Mapped documents with word counts:', docs.map(d => ({ 
+          title: d.title, 
+          wordCount: d.wordCount, 
+          metadata: d.metadata 
+        })));
         
         setProjectDocs(docs as Document[]);
         
@@ -314,6 +394,16 @@ const Project = () => {
           !doc.parentId && ['folder', 'chapter', 'part'].includes(doc.documentType)
         );
         setExpandedNodes(mainFolders.map(folder => folder.id));
+
+        // Auto-select the manuscript folder
+        const manuscriptFolder = docs.find(doc => 
+          doc.documentType === 'folder' && 
+          (doc.title.toLowerCase().includes('manuscript') || doc.title.toLowerCase() === 'manuscript')
+        );
+        if (manuscriptFolder) {
+          setSelectedDocument(manuscriptFolder);
+          setExpandedNodes(prev => [...prev, manuscriptFolder.id]);
+        }
       } catch (error) {
         console.error('Failed to load project data:', error);
       } finally {
@@ -572,6 +662,11 @@ const Project = () => {
     return icons[type] || '📄';
   };
 
+  const handleEditDocument = (document: Document) => {
+    console.log('📝 Opening editor for document:', document.title, document);
+    setEditingDocument(document);
+  };
+
   if (isLoading) {
     return (
       <div className="loading-container">
@@ -600,7 +695,8 @@ const Project = () => {
           {project.description && <p className="project-description">{project.description}</p>}
           <p className="project-meta">
             Created: {new Date(project.createdAt).toLocaleDateString()} | 
-            Documents: {projectDocs.length}
+            Documents: {projectDocs.length} | 
+            Word Count: {manuscriptWordCount.toLocaleString()}
             {isMoving && <span className="move-indicator"> | Moving document...</span>}
           </p>
         </div>
@@ -696,6 +792,7 @@ const Project = () => {
                     onDrop={handleDrop}
                     onSelect={setSelectedDocument}
                     onDelete={handleDeleteClick}
+                    onEdit={handleEditDocument}
                     allDocuments={projectDocs}
                     expandedNodes={expandedNodes}
                     childrenMap={childrenMap}
@@ -731,9 +828,23 @@ const Project = () => {
                   <div className="metadata-item">
                     <strong>Updated:</strong> {new Date(selectedDocument.updatedAt).toLocaleDateString()}
                   </div>
-                  {selectedDocument.wordCount && (
+                  {(selectedDocument.wordCount || selectedDocumentWordCount > 0) && (
                     <div className="metadata-item">
-                      <strong>Word Count:</strong> {selectedDocument.wordCount.toLocaleString()}
+                      <strong>Word Count:</strong> 
+                      {selectedDocument.wordCount ? (
+                        <span>
+                          {selectedDocument.wordCount.toLocaleString()}
+                          {selectedDocumentWordCount > selectedDocument.wordCount && (
+                            <span className="total-word-count">
+                              {' '}(Total: {selectedDocumentWordCount.toLocaleString()})
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="total-word-count">
+                          {selectedDocumentWordCount.toLocaleString()} (from children)
+                        </span>
+                      )}
                     </div>
                   )}
                   {selectedDocument.status && (
@@ -768,7 +879,7 @@ const Project = () => {
               {!['folder', 'chapter', 'part'].includes(selectedDocument.documentType) && (
                 <div className="document-actions-section">
                   <button
-                    onClick={() => console.log('Edit document:', selectedDocument.title)}
+                    onClick={() => setEditingDocument(selectedDocument)}
                     className="btn btn-primary"
                   >
                     📝 Edit Document
@@ -779,17 +890,8 @@ const Project = () => {
           ) : (
             <div className="workspace-placeholder">
               <div className="placeholder-icon">✨</div>
-              <h3>Select a document to view</h3>
-              <p>Choose a document from the project tree to see its details and edit it.</p>
-              <div className="tips-section">
-                <h4>💡 Interactive Features:</h4>
-                <ul>
-                  <li>• <strong>Drag & Drop:</strong> Drag documents between folders to reorganize</li>
-                  <li>• <strong>Expand/Collapse:</strong> Click folder icons to show/hide contents</li>
-                  <li>• <strong>Organization:</strong> Use chapters to group scenes, folders for organization</li>
-                  {isMoving && <li>• <strong>Moving...</strong> Document move in progress</li>}
-                </ul>
-              </div>
+              <h3>Welcome to your writing workspace</h3>
+              <p>Select any document from the project tree to view and edit it.</p>
             </div>
           )}
         </main>
@@ -804,6 +906,40 @@ const Project = () => {
         onCancel={handleDeleteCancel}
         isDeleting={deleteModal.isDeleting}
       />
+
+      {editingDocument && (
+        <DocumentEditor
+          document={{
+            _id: editingDocument._id || editingDocument.id,
+            title: editingDocument.title,
+            content: editingDocument.content || '',
+            documentType: editingDocument.documentType
+          }}
+          onClose={() => setEditingDocument(null)}
+          onSave={(content) => {
+            // Reload project data to get updated word counts
+            const loadProjectData = async () => {
+              try {
+                // Small delay to ensure save completes
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                const docsResponse = await documents.getByProject(id!);
+                const docs = (docsResponse.data as any[]).map(doc => ({
+                  ...doc,
+                  id: doc._id,
+                  parentId: doc.parent
+                }));
+                setProjectDocs(docs as Document[]);
+                console.log('🔄 Project data reloaded after save');
+              } catch (error) {
+                console.error('Failed to reload project data:', error);
+              }
+            };
+            loadProjectData();
+            setEditingDocument(null);
+          }}
+        />
+      )}
     </div>
   );
 };
