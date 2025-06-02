@@ -1,6 +1,4 @@
-// client/src/pages/Project.tsx - FIXED DRAG AND DROP TO PERSIST TO BACKEND
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projects, documents } from '../services/api';
 import DocumentDeleteModal from '../components/DocumentDeleteModal';
@@ -45,8 +43,6 @@ interface ProjectData {
 interface TreeNodeProps {
   document: Document;
   level: number;
-  children: Document[];
-  isExpanded: boolean;
   onToggleExpand: (id: string) => void;
   onDragStart: (e: React.DragEvent, doc: Document) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -54,17 +50,14 @@ interface TreeNodeProps {
   onSelect: (doc: Document) => void;
   onDelete: (doc: Document) => void;
   selectedId?: string;
-  isDragOver: boolean;
-  canDrop: boolean;
   allDocuments: Document[];
   expandedNodes: string[];
+  childrenMap: Map<string, Document[]>;
 }
 
 const TreeNode: React.FC<TreeNodeProps> = ({
   document,
   level,
-  children,
-  isExpanded,
   onToggleExpand,
   onDragStart,
   onDragOver,
@@ -72,14 +65,19 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   onSelect,
   onDelete,
   selectedId,
-  isDragOver,
-  canDrop,
   allDocuments,
-  expandedNodes
+  expandedNodes,
+  childrenMap
 }) => {
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [canDrop, setCanDrop] = useState(false);
+  const [beingDragged, setBeingDragged] = useState(false);
+  
+  const children = childrenMap.get(document.id) || [];
   const hasChildren = children.length > 0;
   const isFolder = ['folder', 'chapter', 'part'].includes(document.documentType);
   const isSelected = selectedId === document.id;
+  const isExpanded = expandedNodes.includes(document.id);
   
   const getIcon = (type: string) => {
     const icons: Record<string, string> = {
@@ -98,10 +96,16 @@ const TreeNode: React.FC<TreeNodeProps> = ({
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (hasChildren && isFolder) {
+    console.log('Selecting document:', document.title, 'ID:', document.id);
+    onSelect(document);
+    if (hasChildren && isFolder && e.detail === 2) { // Double click to expand
       onToggleExpand(document.id);
     }
-    onSelect(document);
+  };
+
+  const handleExpandClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onToggleExpand(document.id);
   };
 
   const handleDeleteClick = (e: React.MouseEvent) => {
@@ -109,25 +113,67 @@ const TreeNode: React.FC<TreeNodeProps> = ({
     onDelete(document);
   };
 
+  const handleDragStart = (e: React.DragEvent) => {
+    setBeingDragged(true);
+    // Set the data for the drag operation
+    e.dataTransfer.setData('text/plain', document.id);
+    e.dataTransfer.effectAllowed = 'move';
+    onDragStart(e, document);
+  };
+
+  const handleDragEnd = () => {
+    setBeingDragged(false);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const canAcceptDrop = ['folder', 'chapter', 'part'].includes(document.documentType);
+    setIsDragOver(true);
+    setCanDrop(canAcceptDrop);
+    onDragOver(e);
+  };
+  
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.stopPropagation();
+    // Only clear if we're actually leaving this element
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOver(false);
+      setCanDrop(false);
+    }
+  };
+  
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    setCanDrop(false);
+    
+    // Get the dragged document ID
+    const draggedDocId = e.dataTransfer.getData('text/plain');
+    if (draggedDocId && canDrop) {
+      onDrop(e, document);
+    }
+  };
+
   return (
     <div className="tree-node">
       <div
-        className={`tree-item ${isDragOver && canDrop ? 'drag-over' : ''} ${isSelected ? 'selected' : ''}`}
+        className={`tree-item ${isDragOver && canDrop ? 'drag-over-inside' : ''} ${isSelected ? 'selected' : ''} ${beingDragged ? 'being-dragged' : ''}`}
         style={{ paddingLeft: `${level * 20 + 12}px` }}
         draggable
-        onDragStart={(e) => onDragStart(e, document)}
-        onDragOver={onDragOver}
-        onDrop={(e) => onDrop(e, document)}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
         onClick={handleClick}
       >
         <div className="tree-content">
           {hasChildren && isFolder && (
             <button
               className={`expand-button ${isExpanded ? 'expanded' : ''}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleExpand(document.id);
-              }}
+              onClick={handleExpandClick}
             >
               ▶
             </button>
@@ -145,7 +191,6 @@ const TreeNode: React.FC<TreeNodeProps> = ({
               className="action-btn edit-btn"
               onClick={(e) => {
                 e.stopPropagation();
-                // TODO: Open document editor
                 console.log('Edit document:', document.title);
               }}
               title="Edit document"
@@ -166,7 +211,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
       {hasChildren && isExpanded && (
         <div className="tree-children">
           {children.map(child => (
-            <TreeNodeContainer
+            <TreeNode
               key={child.id}
               document={child}
               level={level + 1}
@@ -179,73 +224,11 @@ const TreeNode: React.FC<TreeNodeProps> = ({
               onDelete={onDelete}
               allDocuments={allDocuments}
               expandedNodes={expandedNodes}
+              childrenMap={childrenMap}
             />
           ))}
         </div>
       )}
-    </div>
-  );
-};
-
-interface TreeNodeContainerProps {
-  document: Document;
-  level: number;
-  selectedId?: string;
-  onToggleExpand: (id: string) => void;
-  onDragStart: (e: React.DragEvent, doc: Document) => void;
-  onDragOver: (e: React.DragEvent) => void;
-  onDrop: (e: React.DragEvent, targetDoc: Document) => void;
-  onSelect: (doc: Document) => void;
-  onDelete: (doc: Document) => void;
-  allDocuments: Document[];
-  expandedNodes: string[];
-}
-
-const TreeNodeContainer: React.FC<TreeNodeContainerProps> = (props) => {
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [canDrop, setCanDrop] = useState(false);
-  
-  const children = props.allDocuments
-    .filter(doc => doc.parentId === props.document.id)
-    .sort((a, b) => a.order - b.order);
-  
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-    setCanDrop(['folder', 'chapter', 'part'].includes(props.document.documentType));
-  };
-  
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-    setCanDrop(false);
-  };
-  
-  const handleDrop = (e: React.DragEvent, targetDoc: Document) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    setCanDrop(false);
-    props.onDrop(e, targetDoc);
-  };
-  
-  return (
-    <div onDragLeave={handleDragLeave}>
-      <TreeNode
-        document={props.document}
-        level={props.level}
-        children={children}
-        isExpanded={props.expandedNodes.includes(props.document.id)}
-        onToggleExpand={props.onToggleExpand}
-        onDragStart={props.onDragStart}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
-        onSelect={props.onSelect}
-        onDelete={props.onDelete}
-        selectedId={props.selectedId}
-        isDragOver={isDragOver}
-        canDrop={canDrop}
-        allDocuments={props.allDocuments}
-        expandedNodes={props.expandedNodes}
-      />
     </div>
   );
 };
@@ -278,6 +261,33 @@ const Project = () => {
     isDeleting: false
   });
 
+  // Memoize the children map to prevent recalculation on every render
+  const childrenMap = useMemo(() => {
+    const map = new Map<string, Document[]>();
+    
+    // Group documents by parent
+    projectDocs.forEach(doc => {
+      const parentId = doc.parentId || 'root';
+      if (!map.has(parentId)) {
+        map.set(parentId, []);
+      }
+      map.get(parentId)!.push(doc);
+    });
+    
+    // Sort children by order
+    map.forEach((children) => {
+      children.sort((a, b) => a.order - b.order);
+    });
+    
+    return map;
+  }, [projectDocs]);
+
+  const getRootDocuments = useMemo(() => {
+    return projectDocs
+      .filter(doc => !doc.parentId || doc.parentId === project?.rootFolderId)
+      .sort((a, b) => a.order - b.order);
+  }, [projectDocs, project?.rootFolderId]);
+
   useEffect(() => {
     if (!id) return;
     
@@ -290,9 +300,16 @@ const Project = () => {
         ]);
         
         setProject(projectResponse.data as ProjectData);
-        setProjectDocs(docsResponse.data as Document[]);
         
-        const docs = docsResponse.data as Document[];
+        // Map the backend data to frontend format
+        const docs = (docsResponse.data as any[]).map(doc => ({
+          ...doc,
+          id: doc._id, // Map _id to id for frontend consistency
+          parentId: doc.parent // Map parent to parentId
+        }));
+        
+        setProjectDocs(docs as Document[]);
+        
         const mainFolders = docs.filter(doc => 
           !doc.parentId && ['folder', 'chapter', 'part'].includes(doc.documentType)
         );
@@ -307,12 +324,6 @@ const Project = () => {
     loadProjectData();
   }, [id]);
 
-  const getRootDocuments = () => {
-    return projectDocs
-      .filter(doc => !doc.parentId || doc.parentId === project?.rootFolderId)
-      .sort((a, b) => a.order - b.order);
-  };
-
   const handleToggleExpand = (nodeId: string) => {
     setExpandedNodes(prev => {
       if (prev.includes(nodeId)) {
@@ -326,6 +337,7 @@ const Project = () => {
   const handleDragStart = (e: React.DragEvent, doc: Document) => {
     setDraggedDocument(doc);
     e.dataTransfer.effectAllowed = 'move';
+    // Store the document ID in the data transfer
     e.dataTransfer.setData('text/plain', doc.id);
   };
 
@@ -341,7 +353,6 @@ const Project = () => {
     while (currentDoc?.parentId && !visited.includes(currentDoc.parentId)) {
       visited.push(currentDoc.parentId);
       if (currentDoc.parentId === parentId) return true;
-      // eslint-disable-next-line no-loop-func
       currentDoc = projectDocs.find(doc => doc.id === currentDoc!.parentId);
     }
     
@@ -351,7 +362,11 @@ const Project = () => {
   const handleDrop = async (e: React.DragEvent, targetDoc: Document) => {
     e.preventDefault();
     
-    if (!draggedDocument || draggedDocument.id === targetDoc.id || isMoving) {
+    // Get the dragged document ID from the data transfer
+    const draggedDocId = e.dataTransfer.getData('text/plain');
+    const draggedDoc = projectDocs.find(doc => doc.id === draggedDocId);
+    
+    if (!draggedDoc || draggedDoc.id === targetDoc.id || isMoving) {
       setDraggedDocument(null);
       return;
     }
@@ -359,25 +374,28 @@ const Project = () => {
     const canAcceptDrop = ['folder', 'chapter', 'part'].includes(targetDoc.documentType);
     
     if (!canAcceptDrop) {
+      console.log('Cannot drop here - target is not a folder');
       setDraggedDocument(null);
       return;
     }
 
-    if (isDescendant(draggedDocument.id, targetDoc.id)) {
+    if (isDescendant(draggedDoc.id, targetDoc.id)) {
       console.warn('Cannot move folder into its own descendant');
       setDraggedDocument(null);
       return;
     }
 
-    const originalParentId = draggedDocument.parentId;
+    const originalParentId = draggedDoc.parentId;
     
+    // Optimistically update the UI
     setProjectDocs(prev => prev.map(doc => {
-      if (doc.id === draggedDocument.id) {
+      if (doc.id === draggedDoc.id) {
         return { ...doc, parentId: targetDoc.id };
       }
       return doc;
     }));
     
+    // Expand the target folder
     setExpandedNodes(prev => {
       if (!prev.includes(targetDoc.id)) {
         return [...prev, targetDoc.id];
@@ -387,22 +405,23 @@ const Project = () => {
 
     setIsMoving(true);
     try {
-      await documents.move(draggedDocument.id, {
+      await documents.move(draggedDoc.id, {
         newParentId: targetDoc.id
       });
       
-      console.log(`✅ Successfully moved "${draggedDocument.title}" to "${targetDoc.title}"`);
+      console.log(`✅ Successfully moved "${draggedDoc.title}" to "${targetDoc.title}"`);
     } catch (error) {
       console.error('❌ Failed to move document on backend:', error);
       
+      // Revert the change
       setProjectDocs(prev => prev.map(doc => {
-        if (doc.id === draggedDocument.id) {
+        if (doc.id === draggedDoc.id) {
           return { ...doc, parentId: originalParentId };
         }
         return doc;
       }));
       
-      alert(`Failed to move "${draggedDocument.title}". The change has been reverted.`);
+      alert(`Failed to move "${draggedDoc.title}". The change has been reverted.`);
     } finally {
       setIsMoving(false);
       setDraggedDocument(null);
@@ -440,13 +459,20 @@ const Project = () => {
         projectId: project._id,
       });
       
-      setProjectDocs(prev => [...prev, response.data as Document]);
+      // Map the response to frontend format
+      const newDoc = {
+        ...response.data,
+        id: response.data._id,
+        parentId: response.data.parent
+      };
+      
+      setProjectDocs(prev => [...prev, newDoc as Document]);
       setNewDocTitle('');
       setShowCreateForm(false);
       
       if (parentId) {
         setExpandedNodes(prev => {
-          if (!prev.includes(parentId!)) {  // Add ! since we know it's defined here
+          if (!prev.includes(parentId!)) {
             return [...prev, parentId!];
           }
           return prev;
@@ -492,7 +518,6 @@ const Project = () => {
             while (currentDoc?.parentId && !visitedIds.includes(currentDoc.parentId)) {
               visitedIds.push(currentDoc.parentId);
               if (currentDoc.parentId === targetDocId) return true;
-              // eslint-disable-next-line no-loop-func
               currentDoc = docs.find(d => d.id === currentDoc!.parentId);
             }
             
@@ -566,8 +591,6 @@ const Project = () => {
       </div>
     );
   }
-
-  const rootDocuments = getRootDocuments();
 
   return (
     <div className="project-page">
@@ -653,7 +676,7 @@ const Project = () => {
           </div>
           
           <div className="document-tree">
-            {rootDocuments.length === 0 ? (
+            {getRootDocuments.length === 0 ? (
               <div className="empty-documents">
                 <div className="empty-icon">📄</div>
                 <p>No documents yet.</p>
@@ -661,8 +684,8 @@ const Project = () => {
               </div>
             ) : (
               <div className="tree-list">
-                {rootDocuments.map(doc => (
-                  <TreeNodeContainer
+                {getRootDocuments.map(doc => (
+                  <TreeNode
                     key={doc.id}
                     document={doc}
                     level={0}
@@ -675,6 +698,7 @@ const Project = () => {
                     onDelete={handleDeleteClick}
                     allDocuments={projectDocs}
                     expandedNodes={expandedNodes}
+                    childrenMap={childrenMap}
                   />
                 ))}
               </div>
