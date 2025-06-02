@@ -1,7 +1,7 @@
 // Update client/src/pages/Dashboard.tsx
 
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { projects } from '../services/api';
 import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
 import './Dashboard.css';
@@ -17,6 +17,7 @@ interface Project {
 }
 
 const Dashboard = () => {
+  const navigate = useNavigate();
   const [userProjects, setUserProjects] = useState<Project[]>([]);
   const [newProjectName, setNewProjectName] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -56,9 +57,10 @@ const Dashboard = () => {
 
     setIsCreating(true);
     projects.create({ name: newProjectName })
-      .then(() => {
+      .then((response) => {
         setNewProjectName('');
-        loadProjects();
+        // Navigate to the newly created project immediately
+        navigate(`/projects/${response.data._id}`);
       })
       .catch(error => {
         console.error('Failed to create project:', error);
