@@ -1,4 +1,4 @@
-// server/src/services/GoogleService.ts - COMPLETE FIXED VERSION
+// server/src/services/GoogleService.ts - FIXED DOCUMENT CREATION
 import { google } from 'googleapis';
 import User from '../models/User.js';
 
@@ -102,7 +102,68 @@ export default class GoogleService {
   }
 
   // ===========================================
-  // FIXED PROJECT CREATION WITH PROPER STRUCTURE
+  // FIXED DOCUMENT CREATION - HANDLES PARENT CORRECTLY
+  // ===========================================
+
+  async createDocument(
+    projectId: string,
+    title: string, 
+    parentId: string, 
+    documentType: string = 'scene'
+  ): Promise<{ driveId: string; metadata: DocumentMetadata }> {
+    try {
+      console.log(`📝 Creating ${documentType} "${title}" in parent: ${parentId}`);
+      
+      let driveId: string;
+      let actualParentId = parentId;
+
+      // Create the actual file/folder in Google Drive
+      if (documentType === 'folder' || documentType === 'chapter' || documentType === 'part') {
+        // Create as folder
+        driveId = await this.createFolder(title, actualParentId);
+        console.log(`📁 Created folder "${title}" with ID: ${driveId} in parent: ${actualParentId}`);
+      } else {
+        // Create as Google Doc
+        const response = await this.drive.files.create({
+          requestBody: {
+            name: title,
+            mimeType: 'application/vnd.google-apps.document',
+            parents: [actualParentId],
+          },
+          fields: 'id',
+        });
+        driveId = response.data.id;
+        console.log(`📄 Created document "${title}" with ID: ${driveId} in parent: ${actualParentId}`);
+      }
+
+      // Create metadata entry for JSON index
+      const metadata: DocumentMetadata = {
+        id: driveId,
+        title,
+        documentType,
+        parentId: actualParentId === projectId ? undefined : actualParentId,
+        order: Date.now(), // Use timestamp for ordering
+        status: 'draft',
+        includeInCompile: this.shouldIncludeInCompile(documentType),
+        wordCount: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tags: [],
+      };
+
+      // Add to document index
+      await this.addDocumentToIndex(projectId, metadata);
+
+      console.log(`✅ Created ${documentType} "${title}" with proper parent structure`);
+      return { driveId, metadata };
+    } catch (error) {
+      console.error('❌ Failed to create document:', error);
+      throw error;
+    }
+  }
+
+  // ===========================================
+  // PROJECT CREATION WITH PROPER STRUCTURE
   // ===========================================
 
   async createProject(name: string, description: string = ''): Promise<{
@@ -168,8 +229,87 @@ export default class GoogleService {
       // Save metadata to JSON file
       await this.saveProjectMetadata(projectId, metadata);
 
-      // Initialize empty document index
-      await this.saveDocumentIndex(projectId, []);
+      // Initialize document index with structure folders
+      const initialDocuments: DocumentMetadata[] = [
+        {
+          id: chaptersFolder,
+          title: 'Chapters',
+          documentType: 'folder',
+          order: 0,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          tags: []
+        },
+        {
+          id: notesFolder,
+          title: 'Notes',
+          documentType: 'folder',
+          order: 1,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          tags: []
+        },
+        {
+          id: charactersFolder,
+          title: 'Characters',
+          documentType: 'folder',
+          parentId: notesFolder,
+          order: 0,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          tags: []
+        },
+        {
+          id: researchFolder,
+          title: 'Research',
+          documentType: 'folder',
+          parentId: notesFolder,
+          order: 1,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          tags: []
+        },
+        {
+          id: placesFolder,
+          title: 'Places',
+          documentType: 'folder',
+          parentId: notesFolder,
+          order: 2,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          tags: []
+        },
+        {
+          id: miscFolder,
+          title: 'Misc',
+          documentType: 'folder',
+          parentId: notesFolder,
+          order: 3,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          tags: []
+        }
+      ];
+
+      await this.saveDocumentIndex(projectId, initialDocuments);
 
       console.log(`📁 Created project "${name}" with proper folder structure`);
       return { folderId: projectId, metadata };
@@ -180,100 +320,52 @@ export default class GoogleService {
   }
 
   // ===========================================
-  // FIXED DOCUMENT CREATION WITH SMART FOLDER PLACEMENT
+  // HELPER METHODS
   // ===========================================
-
-  async createDocument(
-    projectId: string,
-    title: string, 
-    parentId: string, 
-    documentType: string = 'scene'
-  ): Promise<{ driveId: string; metadata: DocumentMetadata }> {
-    try {
-      const projectMetadata = await this.getProject(projectId);
-      let driveId: string;
-      let actualParentId = parentId;
-
-      // Determine the correct parent folder based on document type
-      if (parentId === projectId) { // If trying to create at root level
-        actualParentId = this.getDefaultParentForType(documentType, projectMetadata);
-      }
-
-      // Create the actual file/folder
-      if (documentType === 'folder') {
-        driveId = await this.createFolder(title, actualParentId);
-      } else if (documentType === 'chapter') {
-        // Chapters are folders inside the Chapters folder
-        driveId = await this.createFolder(title, projectMetadata.structure?.chaptersId || actualParentId);
-        actualParentId = projectMetadata.structure?.chaptersId || actualParentId;
-      } else {
-        // Regular documents (scenes, characters, etc.)
-        const response = await this.drive.files.create({
-          requestBody: {
-            name: title,
-            mimeType: 'application/vnd.google-apps.document',
-            parents: [actualParentId],
-          },
-          fields: 'id',
-        });
-        driveId = response.data.id;
-      }
-
-      // Create metadata entry
-      const metadata: DocumentMetadata = {
-        id: driveId,
-        title,
-        documentType,
-        parentId: actualParentId === projectId ? undefined : actualParentId,
-        order: Date.now(),
-        status: 'draft',
-        includeInCompile: this.shouldIncludeInCompile(documentType),
-        wordCount: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        tags: [],
-      };
-
-      await this.addDocumentToIndex(projectId, metadata);
-
-      console.log(`📄 Created ${documentType} "${title}" in correct folder structure`);
-      return { driveId, metadata };
-    } catch (error) {
-      console.error('❌ Failed to create document:', error);
-      throw error;
-    }
-  }
-
-  // ===========================================
-  // HELPER METHODS FOR ORGANIZATION
-  // ===========================================
-
-  private getDefaultParentForType(documentType: string, projectMetadata: ProjectMetadata): string {
-    const structure = projectMetadata.structure;
-    
-    switch (documentType) {
-      case 'chapter':
-      case 'scene':
-        return structure?.chaptersId || '';
-      case 'character':
-        return structure?.charactersId || '';
-      case 'setting':
-      case 'place':
-        return structure?.placesId || '';
-      case 'research':
-        return structure?.researchId || '';
-      case 'note':
-        return structure?.miscId || '';
-      case 'folder':
-        // For folders, default to chapters unless specified
-        return structure?.chaptersId || '';
-      default:
-        return structure?.chaptersId || '';
-    }
-  }
 
   private shouldIncludeInCompile(documentType: string): boolean {
-    return documentType === 'scene' || documentType === 'chapter';
+    return documentType === 'scene';
+  }
+
+  private async createFolder(name: string, parentId: string): Promise<string> {
+    const response = await this.drive.files.create({
+      requestBody: {
+        name,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentId],
+      },
+      fields: 'id',
+    });
+    return response.data.id;
+  }
+
+  async ensureAppFolder(): Promise<string> {
+    try {
+      const response = await this.drive.files.list({
+        q: `name='${this.APP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+        fields: 'files(id, name)',
+      });
+
+      if (response.data.files.length > 0) {
+        console.log(`📁 Found existing app folder: ${this.APP_FOLDER_NAME}`);
+        return response.data.files[0].id;
+      }
+
+      const folderResponse = await this.drive.files.create({
+        requestBody: {
+          name: this.APP_FOLDER_NAME,
+          mimeType: 'application/vnd.google-apps.folder',
+          description: 'Manuscript Cloud - Writing Project Management',
+        },
+        fields: 'id',
+      });
+
+      console.log(`📁 Created app folder: ${this.APP_FOLDER_NAME}`);
+      return folderResponse.data.id;
+    } catch (error) {
+      console.error('❌ Failed to ensure app folder:', error);
+      throw error;
+    }
   }
 
   // ===========================================
@@ -350,8 +442,10 @@ export default class GoogleService {
 
   async deleteDocument(projectId: string, documentId: string): Promise<void> {
     try {
+      // Delete from Google Drive
       await this.drive.files.delete({ fileId: documentId });
 
+      // Remove from document index
       const documents = await this.getDocuments(projectId);
       const filteredDocs = documents.filter(doc => doc.id !== documentId);
       await this.saveDocumentIndex(projectId, filteredDocs);
@@ -426,19 +520,137 @@ export default class GoogleService {
     try {
       console.log(`🔧 Repairing document index for project: ${projectId}`);
       
-      // Scan the project folder for Google Docs and subfolders
-      const documents = await this.scanProjectForDocuments(projectId);
+      // Get project structure
+      const projectMetadata = await this.getProject(projectId);
+      const structure = projectMetadata.structure;
+      
+      // Create initial structure documents
+      const structureDocuments: DocumentMetadata[] = [];
+      
+      if (structure) {
+        const now = new Date().toISOString();
+        
+        // Add main folders
+        structureDocuments.push({
+          id: structure.chaptersId,
+          title: 'Chapters',
+          documentType: 'folder',
+          order: 0,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: now,
+          updatedAt: now,
+          tags: []
+        });
+        
+        structureDocuments.push({
+          id: structure.notesId,
+          title: 'Notes',
+          documentType: 'folder',
+          order: 1,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: now,
+          updatedAt: now,
+          tags: []
+        });
+        
+        // Add Notes subfolders
+        structureDocuments.push({
+          id: structure.charactersId,
+          title: 'Characters',
+          documentType: 'folder',
+          parentId: structure.notesId,
+          order: 0,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: now,
+          updatedAt: now,
+          tags: []
+        });
+        
+        structureDocuments.push({
+          id: structure.researchId,
+          title: 'Research',
+          documentType: 'folder',
+          parentId: structure.notesId,
+          order: 1,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: now,
+          updatedAt: now,
+          tags: []
+        });
+        
+        structureDocuments.push({
+          id: structure.placesId,
+          title: 'Places',
+          documentType: 'folder',
+          parentId: structure.notesId,
+          order: 2,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: now,
+          updatedAt: now,
+          tags: []
+        });
+        
+        structureDocuments.push({
+          id: structure.miscId,
+          title: 'Misc',
+          documentType: 'folder',
+          parentId: structure.notesId,
+          order: 3,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: now,
+          updatedAt: now,
+          tags: []
+        });
+      }
+      
+      // Scan for any additional documents that might exist
+      const scannedDocuments = await this.scanProjectForDocuments(projectId);
+      
+      // Merge structure documents with scanned documents (avoiding duplicates)
+      const allDocuments = [...structureDocuments];
+      for (const scannedDoc of scannedDocuments) {
+        if (!allDocuments.some(doc => doc.id === scannedDoc.id)) {
+          allDocuments.push(scannedDoc);
+        }
+      }
       
       // Save repaired index
-      await this.saveDocumentIndex(projectId, documents);
+      await this.saveDocumentIndex(projectId, allDocuments);
       
-      console.log(`✅ Repaired document index with ${documents.length} documents`);
-      return documents;
+      console.log(`✅ Repaired document index with ${allDocuments.length} documents`);
+      return allDocuments;
     } catch (error) {
       console.error('❌ Failed to repair document index:', error);
-      // Return empty array as fallback
-      await this.saveDocumentIndex(projectId, []);
-      return [];
+      // Return minimal structure as fallback
+      const now = new Date().toISOString();
+      const fallbackDocs: DocumentMetadata[] = [
+        {
+          id: 'chapters-fallback',
+          title: 'Chapters',
+          documentType: 'folder',
+          order: 0,
+          status: 'draft',
+          includeInCompile: false,
+          wordCount: 0,
+          createdAt: now,
+          updatedAt: now,
+          tags: []
+        }
+      ];
+      await this.saveDocumentIndex(projectId, fallbackDocs);
+      return fallbackDocs;
     }
   }
 
@@ -510,7 +722,7 @@ export default class GoogleService {
       const allFiles = await this.getAllFilesInProject(projectId);
       
       const documents: DocumentMetadata[] = [];
-      let order = 0;
+      let order = 100; // Start high to avoid conflicts with structure folders
 
       for (const file of allFiles) {
         if (file.mimeType === 'application/vnd.google-apps.document') {
@@ -529,7 +741,7 @@ export default class GoogleService {
             tags: [],
           });
         } else if (file.mimeType === 'application/vnd.google-apps.folder' && file.id !== projectId) {
-          // It's a subfolder
+          // It's a subfolder (but skip if it's already in structure)
           documents.push({
             id: file.id,
             title: file.name || 'Untitled Folder',
@@ -601,72 +813,6 @@ export default class GoogleService {
     
     // Default to folder
     return 'folder';
-  }
-
-  // ===========================================
-  // EXPOSE STRUCTURE CREATION FOR MIGRATION
-  // ===========================================
-
-  async ensureProjectStructurePublic(folderId: string): Promise<{
-    chaptersId: string;
-    notesId: string;
-    charactersId: string;
-    researchId: string;
-    placesId: string;
-    miscId: string;
-  }> {
-    return await this.ensureProjectStructure(folderId);
-  }
-
-  // ===========================================
-  // MIGRATE MISPLACED DOCUMENTS
-  // ===========================================
-
-  async organizeMisplacedDocuments(projectId: string): Promise<void> {
-    try {
-      console.log('🔧 Organizing misplaced documents...');
-      
-      const documents = await this.getDocuments(projectId);
-      const projectMetadata = await this.getProject(projectId);
-      
-      let moveCount = 0;
-      
-      for (const doc of documents) {
-        // Check if document is in the wrong place
-        const expectedParent = this.getDefaultParentForType(doc.documentType, projectMetadata);
-        
-        if (doc.parentId && doc.parentId !== expectedParent && expectedParent) {
-          try {
-            // Move the document to the correct folder
-            await this.drive.files.update({
-              fileId: doc.id,
-              addParents: expectedParent,
-              removeParents: doc.parentId,
-              fields: 'id, parents'
-            });
-            
-            // Update the document index
-            doc.parentId = expectedParent;
-            moveCount++;
-            
-            console.log(`📁 Moved ${doc.documentType} "${doc.title}" to correct folder`);
-          } catch (moveError) {
-            console.warn(`⚠️ Failed to move document ${doc.title}:`, moveError);
-          }
-        }
-      }
-      
-      if (moveCount > 0) {
-        // Save updated document index
-        await this.saveDocumentIndex(projectId, documents);
-        console.log(`✅ Organized ${moveCount} misplaced documents`);
-      } else {
-        console.log('✅ All documents are properly organized');
-      }
-    } catch (error) {
-      console.error('❌ Failed to organize misplaced documents:', error);
-      throw error;
-    }
   }
 
   // ===========================================
@@ -776,51 +922,6 @@ export default class GoogleService {
     }
   }
 
-  // ===========================================
-  // HELPER METHODS
-  // ===========================================
-
-  private async createFolder(name: string, parentId: string): Promise<string> {
-    const response = await this.drive.files.create({
-      requestBody: {
-        name,
-        mimeType: 'application/vnd.google-apps.folder',
-        parents: [parentId],
-      },
-      fields: 'id',
-    });
-    return response.data.id;
-  }
-
-  async ensureAppFolder(): Promise<string> {
-    try {
-      const response = await this.drive.files.list({
-        q: `name='${this.APP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
-        fields: 'files(id, name)',
-      });
-
-      if (response.data.files.length > 0) {
-        console.log(`📁 Found existing app folder: ${this.APP_FOLDER_NAME}`);
-        return response.data.files[0].id;
-      }
-
-      const folderResponse = await this.drive.files.create({
-        requestBody: {
-          name: this.APP_FOLDER_NAME,
-          mimeType: 'application/vnd.google-apps.folder',
-          description: 'Manuscript Cloud - Writing Project Management',
-        },
-        fields: 'id',
-      });
-
-      console.log(`📁 Created app folder: ${this.APP_FOLDER_NAME}`);
-      return folderResponse.data.id;
-    } catch (error) {
-      console.error('❌ Failed to ensure app folder:', error);
-      throw error;
-    }
-  }
-
   async getDocumentContent(docId: string): Promise<any> {
     try {
       const response = await this.docs.documents.get({ 
@@ -843,27 +944,6 @@ export default class GoogleService {
     } catch (error) {
       console.error('❌ Google Drive API connection failed:', error);
       return false;
-    }
-  }
-
-  async createProjectFolder(name: string): Promise<{
-    rootId: string;
-    chaptersId: string;
-    charactersId: string;
-    researchId: string;
-  }> {
-    try {
-      const { folderId, metadata } = await this.createProject(name, '');
-      
-      return {
-        rootId: folderId,
-        chaptersId: metadata.structure?.chaptersId || '',
-        charactersId: metadata.structure?.charactersId || '',
-        researchId: metadata.structure?.researchId || '',
-      };
-    } catch (error) {
-      console.error('❌ Failed to create project folder structure:', error);
-      throw error;
     }
   }
 }
