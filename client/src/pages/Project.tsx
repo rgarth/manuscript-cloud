@@ -1,9 +1,8 @@
-// client/src/pages/Project.tsx - COMPLETE FILE WITH DRAG AND DROP ORDERING
+// client/src/pages/Project.tsx - FIXED DRAG AND DROP TO PERSIST TO BACKEND
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projects, documents } from '../services/api';
-import DocumentEditor from '../components/DocumentEditor';
 import DocumentDeleteModal from '../components/DocumentDeleteModal';
 import './Project.css';
 
@@ -50,13 +49,12 @@ interface TreeNodeProps {
   isExpanded: boolean;
   onToggleExpand: (id: string) => void;
   onDragStart: (e: React.DragEvent, doc: Document) => void;
-  onDragOver: (e: React.DragEvent, position: 'before' | 'after' | 'inside') => void;
-  onDrop: (e: React.DragEvent, targetDoc: Document, position: 'before' | 'after' | 'inside') => void;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent, targetDoc: Document) => void;
   onSelect: (doc: Document) => void;
   onDelete: (doc: Document) => void;
   selectedId?: string;
   isDragOver: boolean;
-  dragPosition: 'before' | 'after' | 'inside' | null;
   canDrop: boolean;
   allDocuments: Document[];
   expandedNodes: string[];
@@ -75,7 +73,6 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   onDelete,
   selectedId,
   isDragOver,
-  dragPosition,
   canDrop,
   allDocuments,
   expandedNodes
@@ -112,66 +109,15 @@ const TreeNode: React.FC<TreeNodeProps> = ({
     onDelete(document);
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    
-    const rect = e.currentTarget.getBoundingClientRect();
-    const y = e.clientY - rect.top;
-    const height = rect.height;
-    
-    let position: 'before' | 'after' | 'inside';
-    
-    if (isFolder && y > height * 0.25 && y < height * 0.75) {
-      position = 'inside';
-    } else if (y < height / 2) {
-      position = 'before';
-    } else {
-      position = 'after';
-    }
-    
-    onDragOver(e, position);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    
-    const rect = e.currentTarget.getBoundingClientRect();
-    const y = e.clientY - rect.top;
-    const height = rect.height;
-    
-    let position: 'before' | 'after' | 'inside';
-    
-    if (isFolder && y > height * 0.25 && y < height * 0.75) {
-      position = 'inside';
-    } else if (y < height / 2) {
-      position = 'before';
-    } else {
-      position = 'after';
-    }
-    
-    onDrop(e, document, position);
-  };
-
-  const getDropIndicatorClass = () => {
-    if (!isDragOver || !canDrop) return '';
-    
-    switch (dragPosition) {
-      case 'before': return 'drag-over-before';
-      case 'after': return 'drag-over-after';
-      case 'inside': return 'drag-over-inside';
-      default: return '';
-    }
-  };
-
   return (
     <div className="tree-node">
       <div
-        className={`tree-item ${getDropIndicatorClass()} ${isSelected ? 'selected' : ''}`}
+        className={`tree-item ${isDragOver && canDrop ? 'drag-over' : ''} ${isSelected ? 'selected' : ''}`}
         style={{ paddingLeft: `${level * 20 + 12}px` }}
         draggable
         onDragStart={(e) => onDragStart(e, document)}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
+        onDragOver={onDragOver}
+        onDrop={(e) => onDrop(e, document)}
         onClick={handleClick}
       >
         <div className="tree-content">
@@ -199,9 +145,10 @@ const TreeNode: React.FC<TreeNodeProps> = ({
               className="action-btn edit-btn"
               onClick={(e) => {
                 e.stopPropagation();
-                window.open(`https://docs.google.com/document/d/${document.id}/edit`, '_blank');
+                // TODO: Open document editor
+                console.log('Edit document:', document.title);
               }}
-              title="Edit in Google Docs"
+              title="Edit document"
             >
               ✏️
             </button>
@@ -246,8 +193,8 @@ interface TreeNodeContainerProps {
   selectedId?: string;
   onToggleExpand: (id: string) => void;
   onDragStart: (e: React.DragEvent, doc: Document) => void;
-  onDragOver: (e: React.DragEvent, position: 'before' | 'after' | 'inside') => void;
-  onDrop: (e: React.DragEvent, targetDoc: Document, position: 'before' | 'after' | 'inside') => void;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent, targetDoc: Document) => void;
   onSelect: (doc: Document) => void;
   onDelete: (doc: Document) => void;
   allDocuments: Document[];
@@ -256,37 +203,28 @@ interface TreeNodeContainerProps {
 
 const TreeNodeContainer: React.FC<TreeNodeContainerProps> = (props) => {
   const [isDragOver, setIsDragOver] = useState(false);
-  const [dragPosition, setDragPosition] = useState<'before' | 'after' | 'inside' | null>(null);
   const [canDrop, setCanDrop] = useState(false);
   
   const children = props.allDocuments
     .filter(doc => doc.parentId === props.document.id)
-    .sort((a, b) => a.order - b.order); // Sort by order field
+    .sort((a, b) => a.order - b.order);
   
-  const handleDragOver = (e: React.DragEvent, position: 'before' | 'after' | 'inside') => {
+  const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(true);
-    setDragPosition(position);
-    
-    // Can drop inside folders, or before/after any document
-    const canDropInside = position === 'inside' && ['folder', 'chapter', 'part'].includes(props.document.documentType);
-    const canDropAdjacent = position === 'before' || position === 'after';
-    
-    setCanDrop(canDropInside || canDropAdjacent);
+    setCanDrop(['folder', 'chapter', 'part'].includes(props.document.documentType));
   };
   
   const handleDragLeave = () => {
     setIsDragOver(false);
-    setDragPosition(null);
     setCanDrop(false);
   };
   
-  const handleDrop = (e: React.DragEvent, targetDoc: Document, position: 'before' | 'after' | 'inside') => {
+  const handleDrop = (e: React.DragEvent, targetDoc: Document) => {
     e.preventDefault();
     setIsDragOver(false);
-    setDragPosition(null);
     setCanDrop(false);
-    props.onDrop(e, targetDoc, position);
+    props.onDrop(e, targetDoc);
   };
   
   return (
@@ -304,7 +242,6 @@ const TreeNodeContainer: React.FC<TreeNodeContainerProps> = (props) => {
         onDelete={props.onDelete}
         selectedId={props.selectedId}
         isDragOver={isDragOver}
-        dragPosition={dragPosition}
         canDrop={canDrop}
         allDocuments={props.allDocuments}
         expandedNodes={props.expandedNodes}
@@ -373,7 +310,7 @@ const Project = () => {
   const getRootDocuments = () => {
     return projectDocs
       .filter(doc => !doc.parentId || doc.parentId === project?.rootFolderId)
-      .sort((a, b) => a.order - b.order); // Sort by order field
+      .sort((a, b) => a.order - b.order);
   };
 
   const handleToggleExpand = (nodeId: string) => {
@@ -392,7 +329,7 @@ const Project = () => {
     e.dataTransfer.setData('text/plain', doc.id);
   };
 
-  const handleDragOver = (e: React.DragEvent, position: 'before' | 'after' | 'inside') => {
+  const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
   };
@@ -411,62 +348,7 @@ const Project = () => {
     return false;
   };
 
-  // FIXED: Reorder documents with proper order calculation
-  const reorderDocuments = (
-    docs: Document[], 
-    draggedId: string, 
-    targetId: string, 
-    position: 'before' | 'after' | 'inside',
-    newParentId?: string
-  ): Document[] => {
-    const updatedDocs = [...docs];
-    const draggedIndex = updatedDocs.findIndex(doc => doc.id === draggedId);
-    const targetIndex = updatedDocs.findIndex(doc => doc.id === targetId);
-    
-    if (draggedIndex === -1 || targetIndex === -1) return docs;
-    
-    const draggedDoc = updatedDocs[draggedIndex];
-    const targetDoc = updatedDocs[targetIndex];
-    
-    // Update parent if moving inside a folder
-    if (position === 'inside') {
-      draggedDoc.parentId = targetId;
-      
-      // Set order to be at the end of the new parent's children
-      const siblings = updatedDocs.filter(doc => doc.parentId === targetId && doc.id !== draggedId);
-      const maxOrder = siblings.length > 0 ? Math.max(...siblings.map(doc => doc.order)) : 0;
-      draggedDoc.order = maxOrder + 1000;
-      
-    } else {
-      // Moving before/after - same parent as target
-      draggedDoc.parentId = targetDoc.parentId;
-      
-      // Get all siblings (including the moved document)
-      const siblings = updatedDocs
-        .filter(doc => doc.parentId === targetDoc.parentId)
-        .sort((a, b) => a.order - b.order);
-      
-      // Remove the dragged document from siblings to avoid duplicates
-      const siblingsWithoutDragged = siblings.filter(doc => doc.id !== draggedId);
-      
-      // Find where to insert in the sorted list
-      const targetIndexInSiblings = siblingsWithoutDragged.findIndex(doc => doc.id === targetId);
-      const insertIndex = position === 'before' ? targetIndexInSiblings : targetIndexInSiblings + 1;
-      
-      // Reorder all siblings
-      siblingsWithoutDragged.splice(insertIndex, 0, draggedDoc);
-      
-      // Reassign order values with gaps
-      siblingsWithoutDragged.forEach((doc, index) => {
-        doc.order = (index + 1) * 1000; // Use large gaps for future insertions
-      });
-    }
-    
-    return updatedDocs;
-  };
-
-  // ENHANCED: Handle drop with proper ordering and backend persistence
-  const handleDrop = async (e: React.DragEvent, targetDoc: Document, position: 'before' | 'after' | 'inside') => {
+  const handleDrop = async (e: React.DragEvent, targetDoc: Document) => {
     e.preventDefault();
     
     if (!draggedDocument || draggedDocument.id === targetDoc.id || isMoving) {
@@ -474,67 +356,52 @@ const Project = () => {
       return;
     }
 
-    // Validate the drop
-    if (position === 'inside') {
-      const canAcceptDrop = ['folder', 'chapter', 'part'].includes(targetDoc.documentType);
-      if (!canAcceptDrop) {
-        setDraggedDocument(null);
-        return;
-      }
-      
-      if (isDescendant(draggedDocument.id, targetDoc.id)) {
-        console.warn('Cannot move folder into its own descendant');
-        setDraggedDocument(null);
-        return;
-      }
-    }
-
-    // Store original state for rollback
-    const originalDocs = [...projectDocs];
+    const canAcceptDrop = ['folder', 'chapter', 'part'].includes(targetDoc.documentType);
     
-    // Calculate new order and parent
-    const updatedDocs = reorderDocuments(
-      projectDocs,
-      draggedDocument.id,
-      targetDoc.id,
-      position
-    );
-    
-    const updatedDraggedDoc = updatedDocs.find(doc => doc.id === draggedDocument.id);
-    if (!updatedDraggedDoc) {
-      console.error('Failed to find updated dragged document');
+    if (!canAcceptDrop) {
+      setDraggedDocument(null);
       return;
     }
-    
-    // Optimistically update UI
-    setProjectDocs(updatedDocs);
-    
-    // Expand target folder if moving inside
-    if (position === 'inside') {
-      setExpandedNodes(prev => {
-        if (!prev.includes(targetDoc.id)) {
-          return [...prev, targetDoc.id];
-        }
-        return prev;
-      });
+
+    if (isDescendant(draggedDocument.id, targetDoc.id)) {
+      console.warn('Cannot move folder into its own descendant');
+      setDraggedDocument(null);
+      return;
     }
 
-    // Persist to backend
+    const originalParentId = draggedDocument.parentId;
+    
+    setProjectDocs(prev => prev.map(doc => {
+      if (doc.id === draggedDocument.id) {
+        return { ...doc, parentId: targetDoc.id };
+      }
+      return doc;
+    }));
+    
+    setExpandedNodes(prev => {
+      if (!prev.includes(targetDoc.id)) {
+        return [...prev, targetDoc.id];
+      }
+      return prev;
+    });
+
     setIsMoving(true);
     try {
       await documents.move(draggedDocument.id, {
-        newParentId: updatedDraggedDoc.parentId,
-        newOrder: updatedDraggedDoc.order
+        newParentId: targetDoc.id
       });
       
-      console.log(`✅ Successfully moved "${draggedDocument.title}" with new order ${updatedDraggedDoc.order}`);
+      console.log(`✅ Successfully moved "${draggedDocument.title}" to "${targetDoc.title}"`);
     } catch (error) {
       console.error('❌ Failed to move document on backend:', error);
       
-      // Rollback the UI change on error
-      setProjectDocs(originalDocs);
+      setProjectDocs(prev => prev.map(doc => {
+        if (doc.id === draggedDocument.id) {
+          return { ...doc, parentId: originalParentId };
+        }
+        return doc;
+      }));
       
-      // Show user-friendly error message
       alert(`Failed to move "${draggedDocument.title}". The change has been reverted.`);
     } finally {
       setIsMoving(false);
@@ -548,30 +415,22 @@ const Project = () => {
     
     setIsCreating(true);
     try {
-      let parentId: string;
-      let newOrder = Date.now(); // Default order
+      let parentId: string | undefined;
       
       if (selectedDocument) {
         if (['folder', 'chapter', 'part'].includes(selectedDocument.documentType)) {
           parentId = selectedDocument.id;
-          // Set order to be at the end of this parent's children
-          const siblings = projectDocs.filter(doc => doc.parentId === parentId);
-          newOrder = siblings.length > 0 ? Math.max(...siblings.map(doc => doc.order)) + 1000 : 1000;
         } else {
           if (selectedDocument.parentId) {
             parentId = selectedDocument.parentId;
-            // Insert after the selected document
-            newOrder = selectedDocument.order + 500;
           } else {
-            parentId = getDefaultParentForType(newDocType);
-            const siblings = projectDocs.filter(doc => doc.parentId === parentId);
-            newOrder = siblings.length > 0 ? Math.max(...siblings.map(doc => doc.order)) + 1000 : 1000;
+            const parentDoc = projectDocs.find(doc => 
+              ['folder', 'chapter', 'part'].includes(doc.documentType) &&
+              projectDocs.some(child => child.parentId === doc.id && child.id === selectedDocument.id)
+            );
+            parentId = parentDoc?.id;
           }
         }
-      } else {
-        parentId = getDefaultParentForType(newDocType);
-        const siblings = projectDocs.filter(doc => doc.parentId === parentId);
-        newOrder = siblings.length > 0 ? Math.max(...siblings.map(doc => doc.order)) + 1000 : 1000;
       }
 
       const response = await documents.create({
@@ -579,7 +438,6 @@ const Project = () => {
         documentType: newDocType,
         parentId: parentId,
         projectId: project._id,
-        order: newOrder
       });
       
       setProjectDocs(prev => [...prev, response.data as Document]);
@@ -595,33 +453,17 @@ const Project = () => {
         });
       }
       
-      console.log(`Created ${newDocType} "${newDocTitle}" with order ${newOrder}`);
+      const locationContext = selectedDocument 
+        ? ['folder', 'chapter', 'part'].includes(selectedDocument.documentType)
+          ? `inside "${selectedDocument.title}"`
+          : `in same location as "${selectedDocument.title}"`
+        : 'in default location';
+      
+      console.log(`Created ${newDocType} "${newDocTitle}" ${locationContext}`);
     } catch (error) {
       console.error('Failed to create document:', error);
     } finally {
       setIsCreating(false);
-    }
-  };
-
-  const getDefaultParentForType = (documentType: string): string => {
-    const structure = project?.metadata?.structure;
-    if (!structure) return project?.rootFolderId || '';
-    
-    switch (documentType) {
-      case 'chapter':
-      case 'scene':
-        return structure.chaptersId;
-      case 'character':
-        return structure.charactersId;
-      case 'setting':
-      case 'place':
-        return structure.placesId;
-      case 'research':
-        return structure.researchId;
-      case 'note':
-        return structure.miscId;
-      default:
-        return structure.chaptersId;
     }
   };
 
@@ -736,7 +578,7 @@ const Project = () => {
           <p className="project-meta">
             Created: {new Date(project.createdAt).toLocaleDateString()} | 
             Documents: {projectDocs.length}
-            {isMoving && <span className="move-indicator"> | Reordering documents...</span>}
+            {isMoving && <span className="move-indicator"> | Moving document...</span>}
           </p>
         </div>
         <div className="project-actions">
@@ -902,10 +744,10 @@ const Project = () => {
               {!['folder', 'chapter', 'part'].includes(selectedDocument.documentType) && (
                 <div className="document-actions-section">
                   <button
-                    onClick={() => window.open(`https://docs.google.com/document/d/${selectedDocument.id}/edit`, '_blank')}
+                    onClick={() => console.log('Edit document:', selectedDocument.title)}
                     className="btn btn-primary"
                   >
-                    📝 Edit in Google Docs
+                    📝 Edit Document
                   </button>
                 </div>
               )}
@@ -918,11 +760,10 @@ const Project = () => {
               <div className="tips-section">
                 <h4>💡 Interactive Features:</h4>
                 <ul>
-                  <li>• <strong>Drag & Drop:</strong> Drag documents to reorder or move between folders</li>
-                  <li>• <strong>Smart Ordering:</strong> Documents maintain custom order for manuscript compilation</li>
-                  <li>• <strong>Precise Drops:</strong> Drop before, after, or inside folders</li>
-                  <li>• <strong>Auto-Save:</strong> Changes are automatically saved to Google Drive</li>
-                  {isMoving && <li>• <strong>Reordering...</strong> Document move in progress</li>}
+                  <li>• <strong>Drag & Drop:</strong> Drag documents between folders to reorganize</li>
+                  <li>• <strong>Expand/Collapse:</strong> Click folder icons to show/hide contents</li>
+                  <li>• <strong>Organization:</strong> Use chapters to group scenes, folders for organization</li>
+                  {isMoving && <li>• <strong>Moving...</strong> Document move in progress</li>}
                 </ul>
               </div>
             </div>

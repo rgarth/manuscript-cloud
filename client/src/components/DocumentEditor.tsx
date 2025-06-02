@@ -14,11 +14,11 @@ interface DocumentEditorProps {
 }
 
 const DocumentEditor: React.FC<DocumentEditorProps> = ({
-  document: documentProp,
+  document,
   onSave,
   onClose
 }) => {
-  const [content, setContent] = useState(documentProp.content || '');
+  const [content, setContent] = useState(document.content || '');
   const [isSaving, setIsSaving] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [wordCount, setWordCount] = useState(0);
@@ -29,7 +29,7 @@ const DocumentEditor: React.FC<DocumentEditorProps> = ({
     
     setIsSaving(true);
     try {
-      await documents.update(documentProp._id, { content });
+      await documents.update(document._id, { content });
       setHasUnsavedChanges(false);
       onSave?.(content);
       console.log('Document saved successfully');
@@ -38,7 +38,7 @@ const DocumentEditor: React.FC<DocumentEditorProps> = ({
     } finally {
       setIsSaving(false);
     }
-  }, [documentProp._id, content, hasUnsavedChanges, onSave]);
+  }, [document._id, content, hasUnsavedChanges, onSave]);
 
   // Auto-save every 30 seconds if there are unsaved changes
   useEffect(() => {
@@ -60,8 +60,8 @@ const DocumentEditor: React.FC<DocumentEditorProps> = ({
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
   }, [handleSave]);
 
   const handleEditorChange = (newContent: string) => {
@@ -78,7 +78,7 @@ const DocumentEditor: React.FC<DocumentEditorProps> = ({
     <div className="document-editor">
       <div className="editor-header">
         <div className="editor-title">
-          <h2>📝 {documentProp.title}</h2>
+          <h2>📝 {document.title}</h2>
           <div className="editor-stats">
             <span>Words: {wordCount}</span>
             {hasUnsavedChanges && <span className="unsaved">• Unsaved changes</span>}
@@ -101,7 +101,7 @@ const DocumentEditor: React.FC<DocumentEditorProps> = ({
       
       <div className="editor-content">
         <Editor
-          apiKey="your-tinymce-api-key"
+          apiKey="your-tinymce-api-key" // You'll need to get this from TinyMCE
           value={content}
           onEditorChange={handleEditorChange}
           init={{
