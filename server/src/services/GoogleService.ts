@@ -1,4 +1,4 @@
-// server/src/services/GoogleService.ts - VERIFIED MOVE FUNCTIONALITY
+// server/src/services/GoogleService.ts - COMPLETE WITH ORDER SUPPORT
 
 import { google } from 'googleapis';
 import User from '../models/User.js';
@@ -102,7 +102,7 @@ export default class GoogleService {
     this.docs = google.docs({ version: 'v1', auth: this.oauth2Client });
   }
 
-  // VERIFIED: Document creation with proper parent handling
+  // Standard document creation
   async createDocument(
     projectId: string,
     title: string, 
@@ -148,7 +148,7 @@ export default class GoogleService {
         title,
         documentType,
         parentId: jsonParentId,
-        order: Date.now(),
+        order: Date.now(), // Default order
         status: 'draft',
         includeInCompile: this.shouldIncludeInCompile(documentType),
         wordCount: 0,
@@ -167,7 +167,73 @@ export default class GoogleService {
     }
   }
 
-  // VERIFIED: Document update with enhanced move functionality
+  // ENHANCED: Document creation with order support
+  async createDocumentWithOrder(
+    projectId: string,
+    title: string, 
+    parentFolderId: string,
+    documentType: string = 'scene',
+    order: number
+  ): Promise<{ driveId: string; metadata: DocumentMetadata }> {
+    try {
+      console.log(`📝 Creating ${documentType} "${title}" with order ${order} in folder: ${parentFolderId}`);
+      
+      let driveId: string;
+
+      if (documentType === 'folder' || documentType === 'chapter' || documentType === 'part') {
+        const response = await this.drive.files.create({
+          requestBody: {
+            name: title,
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [parentFolderId],
+          },
+          fields: 'id',
+        });
+        driveId = response.data.id;
+        console.log(`📁 Created folder "${title}" with ID: ${driveId}`);
+      } else {
+        const response = await this.drive.files.create({
+          requestBody: {
+            name: title,
+            mimeType: 'application/vnd.google-apps.document',
+            parents: [parentFolderId],
+          },
+          fields: 'id',
+        });
+        driveId = response.data.id;
+        console.log(`📄 Created document "${title}" with ID: ${driveId}`);
+      }
+
+      let jsonParentId: string | undefined = undefined;
+      if (parentFolderId !== projectId) {
+        jsonParentId = parentFolderId;
+      }
+
+      const metadata: DocumentMetadata = {
+        id: driveId,
+        title,
+        documentType,
+        parentId: jsonParentId,
+        order: order, // Use the provided order
+        status: 'draft',
+        includeInCompile: this.shouldIncludeInCompile(documentType),
+        wordCount: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tags: [],
+      };
+
+      await this.addDocumentToIndex(projectId, metadata);
+
+      console.log(`✅ Created ${documentType} "${title}" with order ${order}`);
+      return { driveId, metadata };
+    } catch (error) {
+      console.error('❌ Failed to create document with order:', error);
+      throw error;
+    }
+  }
+
+  // ENHANCED: Document update with move functionality and order support
   async updateDocument(projectId: string, documentId: string, updates: Partial<DocumentMetadata>): Promise<DocumentMetadata> {
     try {
       const documents = await this.getDocuments(projectId);
@@ -193,7 +259,7 @@ export default class GoogleService {
       documents[docIndex] = updatedDoc;
       await this.saveDocumentIndex(projectId, documents);
 
-      console.log(`📝 Updated document metadata: ${documentId}`);
+      console.log(`📝 Updated document metadata: ${documentId}${updates.order ? ` with order ${updates.order}` : ''}`);
       return updatedDoc;
     } catch (error) {
       console.error('❌ Failed to update document:', error);
@@ -298,7 +364,7 @@ export default class GoogleService {
           id: chaptersFolder,
           title: 'Chapters',
           documentType: 'folder',
-          order: 0,
+          order: 1000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -310,7 +376,7 @@ export default class GoogleService {
           id: notesFolder,
           title: 'Notes',
           documentType: 'folder',
-          order: 1,
+          order: 2000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -323,7 +389,7 @@ export default class GoogleService {
           title: 'Characters',
           documentType: 'folder',
           parentId: notesFolder,
-          order: 0,
+          order: 1000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -336,7 +402,7 @@ export default class GoogleService {
           title: 'Research',
           documentType: 'folder',
           parentId: notesFolder,
-          order: 1,
+          order: 2000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -349,7 +415,7 @@ export default class GoogleService {
           title: 'Places',
           documentType: 'folder',
           parentId: notesFolder,
-          order: 2,
+          order: 3000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -362,7 +428,7 @@ export default class GoogleService {
           title: 'Misc',
           documentType: 'folder',
           parentId: notesFolder,
-          order: 3,
+          order: 4000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -374,7 +440,7 @@ export default class GoogleService {
 
       await this.saveDocumentIndex(projectId, initialDocuments);
 
-      console.log(`📁 Created project "${name}" with proper folder structure`);
+      console.log(`📁 Created project "${name}" with proper folder structure and ordering`);
       return { folderId: projectId, metadata };
     } catch (error) {
       console.error('❌ Failed to create project:', error);
@@ -438,7 +504,12 @@ export default class GoogleService {
 
   async getDocuments(projectId: string): Promise<DocumentMetadata[]> {
     try {
-      return await this.loadDocumentIndex(projectId);
+      const documents = await this.loadDocumentIndex(projectId);
+      // Ensure all documents have an order field
+      return documents.map(doc => ({
+        ...doc,
+        order: doc.order || Date.now()
+      }));
     } catch (error) {
       console.warn(`⚠️ Document index missing for ${projectId}, attempting repair...`);
       return await this.repairDocumentIndex(projectId);
@@ -551,7 +622,7 @@ export default class GoogleService {
           id: structure.chaptersId,
           title: 'Chapters',
           documentType: 'folder',
-          order: 0,
+          order: 1000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -564,7 +635,7 @@ export default class GoogleService {
           id: structure.notesId,
           title: 'Notes',
           documentType: 'folder',
-          order: 1,
+          order: 2000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -578,7 +649,7 @@ export default class GoogleService {
           title: 'Characters',
           documentType: 'folder',
           parentId: structure.notesId,
-          order: 0,
+          order: 1000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -592,7 +663,7 @@ export default class GoogleService {
           title: 'Research',
           documentType: 'folder',
           parentId: structure.notesId,
-          order: 1,
+          order: 2000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -606,7 +677,7 @@ export default class GoogleService {
           title: 'Places',
           documentType: 'folder',
           parentId: structure.notesId,
-          order: 2,
+          order: 3000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -620,7 +691,7 @@ export default class GoogleService {
           title: 'Misc',
           documentType: 'folder',
           parentId: structure.notesId,
-          order: 3,
+          order: 4000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -651,7 +722,7 @@ export default class GoogleService {
           id: 'chapters-fallback',
           title: 'Chapters',
           documentType: 'folder',
-          order: 0,
+          order: 1000,
           status: 'draft',
           includeInCompile: false,
           wordCount: 0,
@@ -728,7 +799,7 @@ export default class GoogleService {
       const allFiles = await this.getAllFilesInProject(projectId);
       
       const documents: DocumentMetadata[] = [];
-      let order = 100;
+      let order = 5000; // Start after structure folders
 
       for (const file of allFiles) {
         if (file.mimeType === 'application/vnd.google-apps.document') {
@@ -737,7 +808,7 @@ export default class GoogleService {
             title: file.name || 'Untitled Document',
             documentType: this.guessDocumentType(file.name || '', file.parents?.[0]),
             parentId: file.parents?.[0] === projectId ? undefined : file.parents?.[0],
-            order: order++,
+            order: order,
             status: 'draft',
             includeInCompile: this.shouldIncludeInCompile(this.guessDocumentType(file.name || '', file.parents?.[0])),
             wordCount: 0,
@@ -745,13 +816,14 @@ export default class GoogleService {
             updatedAt: file.modifiedTime || new Date().toISOString(),
             tags: [],
           });
+          order += 1000;
         } else if (file.mimeType === 'application/vnd.google-apps.folder' && file.id !== projectId) {
           documents.push({
             id: file.id,
             title: file.name || 'Untitled Folder',
             documentType: this.guessFolderType(file.name || ''),
             parentId: file.parents?.[0] === projectId ? undefined : file.parents?.[0],
-            order: order++,
+            order: order,
             status: 'draft',
             includeInCompile: false,
             wordCount: 0,
@@ -759,6 +831,7 @@ export default class GoogleService {
             updatedAt: file.modifiedTime || new Date().toISOString(),
             tags: [],
           });
+          order += 1000;
         }
       }
 

@@ -11,7 +11,7 @@ import GoogleService from '../services/GoogleService.js';
 
 const router = express.Router();
 
-// Get all documents for a project - READS FROM JSON FILES
+// Get all documents for a project - READS FROM MONGODB NOW
 router.get('/project/:projectId', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
@@ -31,16 +31,30 @@ router.get('/project/:projectId', function(req: Request, res: Response) {
         return res.status(403).json({ error: 'Not authorized to access this project' });
       }
 
-      const user = await User.findById(userId);
-      if (!user?.accessToken || !user?.refreshToken) {
-        return res.status(400).json({ error: 'Missing authentication tokens' });
-      }
+      // Get documents from MongoDB (primary storage now)
+      const documents = await Document.find({ project: projectId })
+        .sort({ order: 1, createdAt: 1 });
 
-      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-      const documents = await googleService.getDocuments(project.rootFolderId);
+      const formattedDocs = documents.map(doc => ({
+        id: doc.googleDriveId || doc._id.toString(),
+        title: doc.title,
+        documentType: doc.documentType,
+        content: doc.content || '',
+        parentId: doc.parentGoogleId,
+        order: doc.order,
+        synopsis: doc.synopsis,
+        status: doc.metadata.status,
+        tags: doc.metadata.tags,
+        wordCount: doc.metadata.wordCount || 0,
+        includeInCompile: doc.metadata.includeInCompile,
+        createdAt: doc.createdAt.toISOString(),
+        updatedAt: doc.updatedAt.toISOString(),
+        lastEditedAt: doc.lastEditedAt ? doc.lastEditedAt.toISOString() : doc.updatedAt.toISOString(),
+        customFields: doc.metadata.customFields
+      }));
 
-      console.log(`📄 Retrieved ${documents.length} documents from JSON index`);
-      return res.json(documents);
+      console.log(`📄 Retrieved ${formattedDocs.length} documents from MongoDB`);
+      return res.json(formattedDocs);
     } catch (error) {
       console.error('Error fetching documents:', error);
       return res.status(500).json({ error: 'Failed to fetch documents' });
@@ -50,7 +64,7 @@ router.get('/project/:projectId', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Create new document - SAVES TO JSON FILES WITH PROPER PARENT HANDLING
+// Create new document - SAVES TO MONGODB + GOOGLE DRIVE
 router.post('/', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
@@ -81,69 +95,71 @@ router.post('/', function(req: Request, res: Response) {
 
       const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
 
-      // FIXED: Proper parent folder ID resolution
-      let actualParentFolderId = project.rootFolderId; // Default to project root
-      let documentParentId: string | undefined = undefined; // For JSON index
+      // Create in Google Drive first to get ID
+      let actualParentFolderId = project.rootFolderId;
+      let documentParentId: string | undefined = undefined;
 
       if (parentId && parentId !== 'root') {
-        // Get current documents to find the parent
-        const documents = await googleService.getDocuments(project.rootFolderId);
-        const parentDoc = documents.find(doc => doc.id === parentId);
+        const parentDoc = await Document.findOne({
+          $or: [
+            { googleDriveId: parentId },
+            { _id: parentId }
+          ]
+        });
         
-        if (parentDoc) {
-          // Check if parent is a folder type that can contain documents
-          if (['folder', 'chapter', 'part'].includes(parentDoc.documentType)) {
-            actualParentFolderId = parentDoc.id; // Use the Google Drive ID directly
-            documentParentId = parentId; // Track in JSON index
-            console.log(`📁 Creating "${title}" in folder "${parentDoc.title}" (${parentId})`);
-          } else {
-            // Parent is not a folder - use its parent instead
-            if (parentDoc.parentId) {
-              const grandParent = documents.find(doc => doc.id === parentDoc.parentId);
-              if (grandParent && ['folder', 'chapter', 'part'].includes(grandParent.documentType)) {
-                actualParentFolderId = grandParent.id;
-                documentParentId = parentDoc.parentId;
-                console.log(`📁 Creating "${title}" alongside "${parentDoc.title}" in "${grandParent.title}"`);
-              }
-            }
-            // If no suitable parent found, will use project root (already set above)
-          }
+        if (parentDoc && ['folder', 'chapter', 'part'].includes(parentDoc.documentType)) {
+          actualParentFolderId = parentDoc.googleDriveId || parentId;
+          documentParentId = parentId;
         }
       }
 
-      console.log(`📝 Creating ${documentType} "${title}" in Google Drive folder: ${actualParentFolderId}`);
-
-      // Create the document with the correct parent folder ID
-      const { driveId, metadata } = await googleService.createDocument(
+      const { driveId } = await googleService.createDocument(
         project.rootFolderId,
         title,
-        actualParentFolderId, // This is the actual Google Drive folder ID
+        actualParentFolderId,
         documentType
       );
 
-      // Update the metadata with the correct parentId for the JSON index
-      if (documentParentId) {
-        metadata.parentId = documentParentId;
-      }
+      // Create in MongoDB (primary storage)
+      const newDocument = await Document.create({
+        project: projectId,
+        title,
+        documentType,
+        googleDriveId: driveId,
+        parentGoogleId: documentParentId,
+        order: Date.now(),
+        content: '',
+        lastEditedAt: new Date(),
+        synopsis: synopsis || '',
+        metadata: {
+          status: 'draft',
+          tags: [],
+          wordCount: 0,
+          characterCount: 0,
+          includeInCompile: documentType === 'scene',
+          customFields: {}
+        }
+      });
 
-      // Optionally cache in MongoDB for search/performance
-      try {
-        await Document.create({
-          project: projectId,
-          googleDriveId: driveId,
-          title,
-          documentType,
-          parentGoogleId: documentParentId,
-          order: metadata.order,
-          lastSyncedAt: new Date(),
-        });
-        console.log(`💾 Cached document in MongoDB: ${title}`);
-      } catch (cacheError) {
-        console.warn('Failed to cache document in MongoDB (non-critical):', cacheError);
-      }
-
-      console.log(`✅ Created ${documentType} "${title}" with proper parent structure`);
-      return res.status(201).json(metadata);
+      console.log(`✅ Created ${documentType} "${title}" in MongoDB and Google Drive`);
+      
+      return res.status(201).json({
+        id: driveId,
+        title: newDocument.title,
+        documentType: newDocument.documentType,
+        content: newDocument.content,
+        parentId: documentParentId,
+        order: newDocument.order,
+        synopsis: newDocument.synopsis,
+        status: newDocument.metadata.status,
+        tags: newDocument.metadata.tags,
+        wordCount: newDocument.metadata.wordCount,
+        includeInCompile: newDocument.metadata.includeInCompile,
+        createdAt: newDocument.createdAt.toISOString(),
+        updatedAt: newDocument.updatedAt.toISOString(),
+        lastEditedAt: newDocument.lastEditedAt.toISOString(),
+        customFields: newDocument.metadata.customFields
+      });
     } catch (error) {
       console.error('Document creation error:', error);
       return res.status(500).json({ error: 'Failed to create document' });
@@ -153,7 +169,7 @@ router.post('/', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Update document metadata
+// Update document metadata and content - MONGODB PRIMARY
 router.patch('/:id', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
@@ -165,62 +181,94 @@ router.patch('/:id', function(req: Request, res: Response) {
         return res.status(401).json({ error: 'User ID required' });
       }
 
-      // Find project that contains this document
-      const cachedDoc = await Document.findOne({ googleDriveId: id });
-      let project: any = null;
+      // Find document in MongoDB first (now stores content locally)
+      let document = await Document.findOne({ 
+        $or: [
+          { googleDriveId: id },
+          { _id: id }
+        ]
+      });
 
-      if (cachedDoc) {
-        project = await Project.findById(cachedDoc.project);
-      } else {
-        // Search through user's projects
-        const userProjects = await Project.find({ owner: userId });
-        for (const proj of userProjects) {
-          const user = await User.findById(userId);
-          if (user?.accessToken && user?.refreshToken) {
-            try {
-              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-              const projDocuments = await googleService.getDocuments(proj.rootFolderId);
-              if (projDocuments.some(doc => doc.id === id)) {
-                project = proj;
-                break;
-              }
-            } catch (error) {
-              console.warn(`Failed to check project ${proj._id} for document ${id}`);
-            }
-          }
-        }
+      if (!document) {
+        return res.status(404).json({ error: 'Document not found' });
       }
 
-      if (!project) {
-        return res.status(404).json({ error: 'Document not found or access denied' });
-      }
-
-      if (project.owner.toString() !== userId) {
+      // Verify user owns this document's project
+      const project = await Project.findById(document.project);
+      if (!project || project.owner.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorized to update this document' });
       }
 
-      const user = await User.findById(userId);
-      if (!user?.accessToken || !user?.refreshToken) {
-        return res.status(400).json({ error: 'Missing authentication tokens' });
-      }
-
-      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-
-      // Prepare updates object
+      // Update document in MongoDB
       const updates: any = {};
       if (title !== undefined) updates.title = title;
       if (synopsis !== undefined) updates.synopsis = synopsis;
+      
       if (metadataUpdates !== undefined) {
-        updates.status = metadataUpdates.status;
-        updates.tags = metadataUpdates.tags;
-        updates.includeInCompile = metadataUpdates.includeInCompile;
-        updates.customFields = metadataUpdates.customFields;
+        // Handle content update
+        if (metadataUpdates.content !== undefined) {
+          updates.content = metadataUpdates.content;
+          updates.lastEditedAt = new Date();
+        }
+        
+        // Handle other metadata
+        if (metadataUpdates.status !== undefined) updates['metadata.status'] = metadataUpdates.status;
+        if (metadataUpdates.tags !== undefined) updates['metadata.tags'] = metadataUpdates.tags;
+        if (metadataUpdates.includeInCompile !== undefined) updates['metadata.includeInCompile'] = metadataUpdates.includeInCompile;
+        if (metadataUpdates.customFields !== undefined) updates['metadata.customFields'] = metadataUpdates.customFields;
+        if (metadataUpdates.wordCount !== undefined) updates['metadata.wordCount'] = metadataUpdates.wordCount;
+        if (metadataUpdates.writingGoals !== undefined) updates['metadata.writingGoals'] = metadataUpdates.writingGoals;
       }
 
-      const updatedDocument = await googleService.updateDocument(project.rootFolderId, id, updates);
+      const updatedDocument = await Document.findByIdAndUpdate(
+        document._id,
+        updates,
+        { new: true, runValidators: true }
+      );
 
-      console.log(`📝 Updated document metadata: ${id}`);
-      return res.json(updatedDocument);
+      if (!updatedDocument) {
+        return res.status(404).json({ error: 'Document not found after update' });
+      }
+
+      // Optionally sync to Google Drive in background (non-blocking)
+      const user = await User.findById(userId);
+      if (user?.accessToken && user?.refreshToken && project.rootFolderId) {
+        try {
+          const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+          // Background sync - don't wait for it
+          googleService.updateDocument(project.rootFolderId, updatedDocument.googleDriveId || id, {
+            title: updatedDocument.title,
+            synopsis: updatedDocument.synopsis,
+            status: updatedDocument.metadata.status,
+            tags: updatedDocument.metadata.tags,
+            includeInCompile: updatedDocument.metadata.includeInCompile,
+            wordCount: updatedDocument.metadata.wordCount
+          }).catch(error => {
+            console.warn('Background Google Drive sync failed:', error);
+          });
+        } catch (error) {
+          console.warn('Failed to setup background sync:', error);
+        }
+      }
+
+      console.log(`📝 Updated document: ${updatedDocument.title} (${updatedDocument._id})`);
+      return res.json({
+        id: updatedDocument.googleDriveId || updatedDocument._id.toString(),
+        title: updatedDocument.title,
+        documentType: updatedDocument.documentType,
+        content: updatedDocument.content,
+        synopsis: updatedDocument.synopsis,
+        parentId: updatedDocument.parentGoogleId,
+        order: updatedDocument.order,
+        status: updatedDocument.metadata.status,
+        tags: updatedDocument.metadata.tags,
+        wordCount: updatedDocument.metadata.wordCount,
+        includeInCompile: updatedDocument.metadata.includeInCompile,
+        createdAt: updatedDocument.createdAt.toISOString(),
+        updatedAt: updatedDocument.updatedAt.toISOString(),
+        lastEditedAt: updatedDocument.lastEditedAt.toISOString(),
+        customFields: updatedDocument.metadata.customFields
+      });
     } catch (error) {
       console.error('Update document error:', error);
       return res.status(500).json({ error: 'Failed to update document' });
@@ -230,7 +278,7 @@ router.patch('/:id', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Move document to new parent
+// Move document to new parent - MONGODB + GOOGLE DRIVE
 router.patch('/:id/move', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
@@ -242,115 +290,49 @@ router.patch('/:id/move', function(req: Request, res: Response) {
         return res.status(401).json({ error: 'User ID required' });
       }
 
-      // Find project that contains this document
-      const cachedDoc = await Document.findOne({ googleDriveId: id });
-      let project: any = null;
+      // Find document in MongoDB
+      const document = await Document.findOne({
+        $or: [
+          { googleDriveId: id },
+          { _id: id }
+        ]
+      });
 
-      if (cachedDoc) {
-        project = await Project.findById(cachedDoc.project);
-      } else {
-        // Search through user's projects
-        const userProjects = await Project.find({ owner: userId });
-        for (const proj of userProjects) {
-          const user = await User.findById(userId);
-          if (user?.accessToken && user?.refreshToken) {
-            try {
-              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-              const projDocuments = await googleService.getDocuments(proj.rootFolderId);
-              if (projDocuments.some(doc => doc.id === id)) {
-                project = proj;
-                break;
-              }
-            } catch (error) {
-              console.warn(`Failed to check project ${proj._id} for document ${id}`);
-            }
-          }
-        }
+      if (!document) {
+        return res.status(404).json({ error: 'Document not found' });
       }
 
-      if (!project) {
-        return res.status(404).json({ error: 'Document not found or access denied' });
-      }
-
-      if (project.owner.toString() !== userId) {
+      // Verify ownership
+      const project = await Project.findById(document.project);
+      if (!project || project.owner.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorized to move this document' });
       }
 
+      // Update parent in MongoDB
+      document.parentGoogleId = newParentId;
+      await document.save();
+
+      // Also move in Google Drive if possible
       const user = await User.findById(userId);
-      if (!user?.accessToken || !user?.refreshToken) {
-        return res.status(400).json({ error: 'Missing authentication tokens' });
-      }
-
-      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-
-      // Get current documents to validate the move
-      const documents = await googleService.getDocuments(project.rootFolderId);
-      const documentToMove = documents.find(doc => doc.id === id);
-      
-      if (!documentToMove) {
-        return res.status(404).json({ error: 'Document not found in project' });
-      }
-
-      // Validate new parent
-      let newActualParentId = project.rootFolderId; // Default to project root
-      let newDocumentParentId: string | undefined = undefined;
-
-      if (newParentId && newParentId !== 'root') {
-        const newParent = documents.find(doc => doc.id === newParentId);
-        if (newParent && ['folder', 'chapter', 'part'].includes(newParent.documentType)) {
-          newActualParentId = newParent.id;
-          newDocumentParentId = newParentId;
-        } else {
-          return res.status(400).json({ error: 'Invalid parent - must be a folder, chapter, or part' });
+      if (user?.accessToken && user?.refreshToken) {
+        try {
+          const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+          await googleService.updateDocument(project.rootFolderId, id, {
+            parentId: newParentId
+          });
+        } catch (error) {
+          console.warn('Failed to move in Google Drive (non-critical):', error);
         }
       }
 
-      // Prevent moving a folder into itself or its descendants
-      if (documentToMove.documentType === 'folder') {
-        const isDescendant = (checkParentId: string, targetId: string): boolean => {
-          const children = documents.filter(doc => doc.parentId === targetId);
-          for (const child of children) {
-            if (child.id === checkParentId) return true;
-            if (child.documentType === 'folder' && isDescendant(checkParentId, child.id)) return true;
-          }
-          return false;
-        };
-
-        if (newDocumentParentId && (newDocumentParentId === id || isDescendant(newDocumentParentId, id))) {
-          return res.status(400).json({ error: 'Cannot move folder into itself or its descendants' });
-        }
-      }
-
-      // Update the document in JSON index
-      const updatedDocument = await googleService.updateDocument(project.rootFolderId, id, {
-        parentId: newDocumentParentId
+      console.log(`✅ Moved document "${document.title}" to new parent`);
+      return res.json({
+        id: document.googleDriveId || document._id.toString(),
+        title: document.title,
+        documentType: document.documentType,
+        parentId: document.parentGoogleId,
+        order: document.order
       });
-
-      // Also move in Google Drive if it's an actual file/folder
-      try {
-        // Get the current file info
-        const drive = googleService.drive;
-        const fileInfo = await drive.files.get({
-          fileId: id,
-          fields: 'parents'
-        });
-
-        // Update the file's parent in Google Drive
-        const previousParents = fileInfo.data.parents?.join(',');
-        await drive.files.update({
-          fileId: id,
-          addParents: newActualParentId,
-          removeParents: previousParents,
-          fields: 'id, parents'
-        });
-
-        console.log(`📁 Moved document "${documentToMove.title}" to new parent in both JSON index and Google Drive`);
-      } catch (driveError) {
-        console.warn('Failed to move in Google Drive (non-critical):', driveError);
-      }
-
-      console.log(`✅ Moved document "${documentToMove.title}" to new parent`);
-      return res.json(updatedDocument);
     } catch (error) {
       console.error('Move document error:', error);
       return res.status(500).json({ error: 'Failed to move document' });
@@ -360,7 +342,7 @@ router.patch('/:id/move', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Check if document can be deleted
+// Check if document can be deleted - MONGODB
 router.get('/:id/can-delete', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
@@ -371,73 +353,41 @@ router.get('/:id/can-delete', function(req: Request, res: Response) {
         return res.status(401).json({ error: 'User ID required' });
       }
 
-      // Find project that contains this document
-      const cachedDoc = await Document.findOne({ googleDriveId: id });
-      let project: any = null;
-      let documents: any[] = [];
+      const document = await Document.findOne({
+        $or: [
+          { googleDriveId: id },
+          { _id: id }
+        ]
+      });
 
-      if (cachedDoc) {
-        project = await Project.findById(cachedDoc.project);
-      } else {
-        // Search through user's projects
-        const userProjects = await Project.find({ owner: userId });
-        for (const proj of userProjects) {
-          const user = await User.findById(userId);
-          if (user?.accessToken && user?.refreshToken) {
-            try {
-              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-              const projDocuments = await googleService.getDocuments(proj.rootFolderId);
-              if (projDocuments.some(doc => doc.id === id)) {
-                project = proj;
-                documents = projDocuments;
-                break;
-              }
-            } catch (error) {
-              console.warn(`Failed to check project ${proj._id} for document ${id}`);
-            }
-          }
-        }
-      }
-
-      if (!project) {
-        return res.status(404).json({ error: 'Document not found or access denied' });
-      }
-
-      if (project.owner.toString() !== userId) {
-        return res.status(403).json({ error: 'Not authorized to access this document' });
-      }
-
-      const user = await User.findById(userId);
-      if (!user?.accessToken || !user?.refreshToken) {
-        return res.status(400).json({ error: 'Missing authentication tokens' });
-      }
-
-      if (documents.length === 0) {
-        const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-        documents = await googleService.getDocuments(project.rootFolderId);
-      }
-
-      const targetDoc = documents.find(doc => doc.id === id);
-      if (!targetDoc) {
+      if (!document) {
         return res.status(404).json({ error: 'Document not found' });
       }
 
-      // Check if it's a folder with children
-      const children = documents.filter(doc => doc.parentId === id);
-      const canDelete = children.length === 0 || targetDoc.documentType !== 'folder';
+      const project = await Project.findById(document.project);
+      if (!project || project.owner.toString() !== userId) {
+        return res.status(403).json({ error: 'Not authorized to access this document' });
+      }
+
+      // Check for children in MongoDB
+      const children = await Document.find({ 
+        parentGoogleId: document.googleDriveId || document._id.toString() 
+      });
+
+      const canDelete = children.length === 0 || document.documentType !== 'folder';
 
       return res.json({
         canDelete,
         childCount: children.length,
         children: children.map(child => ({
-          id: child.id,
+          id: child.googleDriveId || child._id.toString(),
           title: child.title,
           type: child.documentType
         })),
         document: {
-          id: targetDoc.id,
-          title: targetDoc.title,
-          type: targetDoc.documentType
+          id: document.googleDriveId || document._id.toString(),
+          title: document.title,
+          type: document.documentType
         }
       });
     } catch (error) {
@@ -449,7 +399,7 @@ router.get('/:id/can-delete', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Delete document - UPDATES JSON FILES
+// Delete document - MONGODB + GOOGLE DRIVE
 router.delete('/:id', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
@@ -461,63 +411,28 @@ router.delete('/:id', function(req: Request, res: Response) {
         return res.status(401).json({ error: 'User ID required' });
       }
 
-      // Find project that contains this document
-      const cachedDoc = await Document.findOne({ googleDriveId: id });
-      let project: any = null;
-      let documents: any[] = [];
+      const document = await Document.findOne({
+        $or: [
+          { googleDriveId: id },
+          { _id: id }
+        ]
+      });
 
-      if (cachedDoc) {
-        project = await Project.findById(cachedDoc.project);
-      } else {
-        // Search through user's projects
-        const userProjects = await Project.find({ owner: userId });
-        for (const proj of userProjects) {
-          const user = await User.findById(userId);
-          if (user?.accessToken && user?.refreshToken) {
-            try {
-              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-              const projDocuments = await googleService.getDocuments(proj.rootFolderId);
-              if (projDocuments.some(doc => doc.id === id)) {
-                project = proj;
-                documents = projDocuments;
-                break;
-              }
-            } catch (error) {
-              console.warn(`Failed to check project ${proj._id} for document ${id}`);
-            }
-          }
-        }
-      }
-
-      if (!project) {
-        return res.status(404).json({ error: 'Document not found or access denied' });
-      }
-
-      if (project.owner.toString() !== userId) {
-        return res.status(403).json({ error: 'Not authorized to delete this document' });
-      }
-
-      // Get documents and user if we don't have them yet
-      const user = await User.findById(userId);
-      if (!user?.accessToken || !user?.refreshToken) {
-        return res.status(400).json({ error: 'Missing authentication tokens' });
-      }
-
-      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-      
-      if (documents.length === 0) {
-        documents = await googleService.getDocuments(project.rootFolderId);
-      }
-
-      // Find the target document
-      const targetDoc = documents.find(doc => doc.id === id);
-      if (!targetDoc) {
+      if (!document) {
         return res.status(404).json({ error: 'Document not found' });
       }
 
-      // If it's a folder and force is not specified, check if it has children
-      if (targetDoc.documentType === 'folder' && force !== 'true') {
-        const children = documents.filter(doc => doc.parentId === id);
+      const project = await Project.findById(document.project);
+      if (!project || project.owner.toString() !== userId) {
+        return res.status(403).json({ error: 'Not authorized to delete this document' });
+      }
+
+      // Check for children
+      if (document.documentType === 'folder' && force !== 'true') {
+        const children = await Document.find({ 
+          parentGoogleId: document.googleDriveId || document._id.toString() 
+        });
+        
         if (children.length > 0) {
           return res.status(400).json({ 
             error: 'Cannot delete non-empty folder',
@@ -527,50 +442,43 @@ router.delete('/:id', function(req: Request, res: Response) {
         }
       }
 
-      // Get all documents to delete (including descendants if force deleting folder)
-      let documentsToDelete = [targetDoc];
-      if (targetDoc.documentType === 'folder' && force === 'true') {
-        // Recursively get all descendants
-        const getAllDescendants = (parentId: string): any[] => {
-          const children = documents.filter(doc => doc.parentId === parentId);
-          let descendants = [...children];
-          
+      // Delete from MongoDB (and descendants if force)
+      let deletedCount = 0;
+      if (document.documentType === 'folder' && force === 'true') {
+        // Recursively delete all descendants
+        const deleteRecursive = async (parentId: string) => {
+          const children = await Document.find({ parentGoogleId: parentId });
           for (const child of children) {
             if (child.documentType === 'folder') {
-              const childDescendants = getAllDescendants(child.id);
-              descendants = descendants.concat(childDescendants);
+              await deleteRecursive(child.googleDriveId || child._id.toString());
             }
+            await Document.findByIdAndDelete(child._id);
+            deletedCount++;
           }
-          
-          return descendants;
         };
         
-        const descendants = getAllDescendants(id);
-        documentsToDelete = [targetDoc, ...descendants];
+        await deleteRecursive(document.googleDriveId || document._id.toString());
       }
 
-      // Delete from Google Drive and update JSON index
-      for (const doc of documentsToDelete) {
+      await Document.findByIdAndDelete(document._id);
+      deletedCount++;
+
+      // Delete from Google Drive
+      const user = await User.findById(userId);
+      if (user?.accessToken && user?.refreshToken) {
         try {
-          await googleService.deleteDocument(project.rootFolderId, doc.id);
-          console.log(`🗑️ Deleted document: ${doc.title} (${doc.id})`);
-        } catch (googleError) {
-          console.error(`Failed to delete document ${doc.id}:`, googleError);
-          // Continue with other deletions
+          const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
+          await googleService.deleteDocument(project.rootFolderId, document.googleDriveId || id);
+        } catch (error) {
+          console.warn('Failed to delete from Google Drive (non-critical):', error);
         }
       }
 
-      // Delete cached versions from MongoDB
-      const deletedCacheCount = await Document.deleteMany({ 
-        googleDriveId: { $in: documentsToDelete.map(doc => doc.id) }
-      });
-
-      console.log(`🗑️ Deleted ${deletedCacheCount.deletedCount} cached documents from MongoDB`);
-
+      console.log(`🗑️ Deleted ${deletedCount} document(s) from MongoDB`);
       return res.json({ 
         success: true, 
-        message: `Successfully deleted ${documentsToDelete.length} document(s)`,
-        deletedCount: documentsToDelete.length
+        message: `Successfully deleted ${deletedCount} document(s)`,
+        deletedCount
       });
     } catch (error) {
       console.error('Delete document error:', error);
@@ -581,7 +489,7 @@ router.delete('/:id', function(req: Request, res: Response) {
   handleRequest();
 });
 
-// Get document content
+// Get document content - MONGODB PRIMARY
 router.get('/:id/content', function(req: Request, res: Response) {
   const handleRequest = async () => {
     try {
@@ -592,50 +500,40 @@ router.get('/:id/content', function(req: Request, res: Response) {
         return res.status(401).json({ error: 'User ID required' });
       }
 
-      // Find project that contains this document
-      const cachedDoc = await Document.findOne({ googleDriveId: id });
-      let project: any = null;
+      // Find document in MongoDB first
+      let document = await Document.findOne({ 
+        $or: [
+          { googleDriveId: id },
+          { _id: id }
+        ]
+      }).populate('project');
 
-      if (cachedDoc) {
-        project = await Project.findById(cachedDoc.project);
-      } else {
-        // Search through user's projects
-        const userProjects = await Project.find({ owner: userId });
-        for (const proj of userProjects) {
-          const user = await User.findById(userId);
-          if (user?.accessToken && user?.refreshToken) {
-            try {
-              const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-              const projDocuments = await googleService.getDocuments(proj.rootFolderId);
-              if (projDocuments.some(doc => doc.id === id)) {
-                project = proj;
-                break;
-              }
-            } catch (error) {
-              console.warn(`Failed to check project ${proj._id} for document ${id}`);
-            }
-          }
-        }
+      if (!document) {
+        return res.status(404).json({ error: 'Document not found' });
       }
 
-      if (!project) {
-        return res.status(404).json({ error: 'Document not found or access denied' });
-      }
-
-      if (project.owner.toString() !== userId) {
+      // Verify user owns this document's project
+      const project = document.project as any;
+      if (!project || project.owner.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorized to access this document' });
       }
 
-      const user = await User.findById(userId);
-      if (!user?.accessToken || !user?.refreshToken) {
-        return res.status(400).json({ error: 'Missing authentication tokens' });
-      }
-
-      const googleService = new GoogleService(user.accessToken, user.refreshToken, userId, user.email);
-      const content = await googleService.getDocumentContent(id);
-
-      console.log(`📖 Retrieved content for document: ${id}`);
-      return res.json(content);
+      console.log(`📖 Retrieved content for document: ${document.title}`);
+      return res.json({
+        id: document.googleDriveId || document._id.toString(),
+        title: document.title,
+        documentType: document.documentType,
+        content: document.content || '',
+        wordCount: document.metadata.wordCount || 0,
+        characterCount: document.metadata.characterCount || 0,
+        lastEditedAt: document.lastEditedAt.toISOString(),
+        status: document.metadata.status,
+        tags: document.metadata.tags,
+        includeInCompile: document.metadata.includeInCompile,
+        writingGoals: document.metadata.writingGoals,
+        readingTimeMinutes: document.getReadingTimeMinutes(),
+        progress: document.getWritingProgress()
+      });
     } catch (error) {
       console.error('Get document content error:', error);
       return res.status(500).json({ error: 'Failed to get document content' });

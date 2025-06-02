@@ -1,4 +1,5 @@
-// client/src/services/api.ts - UPDATED WITH MOVE METHOD
+// client/src/services/api.ts - UPDATED WITH ORDER SUPPORT
+
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
@@ -40,6 +41,7 @@ export const documents = {
     parentId?: string,
     projectId: string,
     synopsis?: string,
+    order?: number, // NEW: Support for custom order
   }) => api.post('/documents', data),
   getContent: (id: string) => api.get(`/documents/${id}/content`),
   update: (id: string, data: {
@@ -47,10 +49,10 @@ export const documents = {
     synopsis?: string,
     metadata?: any,
   }) => api.patch(`/documents/${id}`, data),
-  // ADDED: Move method for drag and drop
+  // ENHANCED: Move method with order support
   move: (id: string, data: {
     newParentId?: string,
-    newOrder?: number,
+    newOrder?: number, // NEW: Support for reordering
   }) => api.patch(`/documents/${id}/move`, data),
   canDelete: (id: string) => api.get(`/documents/${id}/can-delete`),
   delete: (id: string, force: boolean = false) => api.delete(`/documents/${id}${force ? '?force=true' : ''}`),

@@ -1,4 +1,4 @@
-/* client/src/pages/Project.css - UPDATED WITH MOVE INDICATOR STYLES */
+i/* client/src/pages/Project.css - ENHANCED WITH DRAG STATES AND ORDER DISPLAY */
 
 .project-page {
   max-width: 1400px;
@@ -36,7 +36,7 @@
   opacity: 0.8;
 }
 
-/* NEW: Move indicator styles */
+/* ENHANCED: Move indicator styles */
 .move-indicator {
   color: #fbbf24;
   font-weight: 600;
@@ -146,7 +146,7 @@
   gap: 8px;
 }
 
-/* TREE STYLES */
+/* ENHANCED TREE STYLES WITH DRAG STATES */
 .document-tree {
   flex: 1;
   overflow-y: auto;
@@ -182,7 +182,20 @@
   border-left: 3px solid #3b82f6;
 }
 
-.tree-item.drag-over {
+/* ENHANCED: Specific drag states */
+.tree-item.drag-over-before {
+  border-top: 3px solid #10b981;
+  background-color: #ecfdf5;
+  transform: translateY(2px);
+}
+
+.tree-item.drag-over-after {
+  border-bottom: 3px solid #10b981;
+  background-color: #ecfdf5;
+  transform: translateY(-2px);
+}
+
+.tree-item.drag-over-inside {
   background-color: #dbeafe;
   border: 2px dashed #3b82f6;
   transform: scale(1.02);
@@ -199,7 +212,6 @@
   transform: rotate(2deg);
 }
 
-/* NEW: Enhanced drag states */
 .tree-item.being-dragged {
   opacity: 0.5;
   transform: scale(0.95);
@@ -673,6 +685,11 @@
     height: 50px;
     font-size: 2rem;
   }
+
+  /* Hide order numbers on mobile to save space */
+  .doc-order {
+    display: none;
+  }
 }
 
 @media (max-width: 480px) {
@@ -732,4 +749,55 @@
 .btn:focus {
   outline: 2px solid #3b82f6;
   outline-offset: 2px;
+}
+
+/* DRAG AND DROP VISUAL FEEDBACK */
+.tree-item[draggable="true"]:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Enhanced drag visual states */
+.drag-over-before::before {
+  content: "↑ Drop before";
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #10b981;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  z-index: 10;
+}
+
+.drag-over-after::after {
+  content: "↓ Drop after";
+  position: absolute;
+  bottom: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #10b981;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  z-index: 10;
+}
+
+.drag-over-inside::before {
+  content: "📁 Drop inside";
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  background: #3b82f6;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  z-index: 10;
 }
