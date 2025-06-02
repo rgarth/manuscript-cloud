@@ -424,14 +424,19 @@ const Project = () => {
       
       if (selectedDocument) {
         if (['folder', 'chapter', 'part'].includes(selectedDocument.documentType)) {
-          // Selected document is a folder - create inside it
           parentId = selectedDocument.id;
         } else {
-          // Selected document is a document - create in the same parent location
-          parentId = selectedDocument.parentId || getDefaultParentForType(newDocType);
+          if (selectedDocument.parentId) {
+            parentId = selectedDocument.parentId;
+          } else {
+            const parentDoc = projectDocs.find(doc => 
+              ['folder', 'chapter', 'part'].includes(doc.documentType) &&
+              projectDocs.some(child => child.parentId === doc.id && child.id === selectedDocument.id)
+            );
+            parentId = parentDoc?.id || getDefaultParentForType(newDocType);
+          }
         }
       } else {
-        // No selection - use default location for document type
         parentId = getDefaultParentForType(newDocType);
       }
 

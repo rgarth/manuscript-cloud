@@ -140,11 +140,7 @@ export default class GoogleService {
 
       let jsonParentId: string | undefined = undefined;
       if (parentFolderId !== projectId) {
-        const documents = await this.getDocuments(projectId);
-        const parentDoc = documents.find(doc => doc.id === parentFolderId);
-        if (parentDoc) {
-          jsonParentId = parentDoc.id;
-        }
+        jsonParentId = parentFolderId;
       }
 
       const metadata: DocumentMetadata = {
